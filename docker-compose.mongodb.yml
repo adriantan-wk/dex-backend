@@ -1,0 +1,29 @@
+# Local MongoDB for development. From repo root:
+#   docker compose -f docker-compose.mongodb.yml up -d
+# Stop (keeps data volume):
+#   docker compose -f docker-compose.mongodb.yml down
+#
+# Host port 27018 avoids clashing with another Mongo on 27017.
+# Connection string:
+#   mongodb://root:root@localhost:27018/?authSource=admin
+#
+# Create an app database/user in mongosh:
+#   docker exec -it dex-mongodb mongosh -u root -p root --authenticationDatabase admin
+#   use myapp
+#   db.createUser({ user: "myapp", pwd: "myapp", roles: [{ role: "readWrite", db: "myapp" }] })
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: dex-mongodb
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root
+    volumes:
+      - mongodb_data:/data/db
+
+volumes:
+  mongodb_data:
