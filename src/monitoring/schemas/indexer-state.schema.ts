@@ -11,6 +11,10 @@ export class IndexerState {
   @Prop({ required: true, index: true, unique: true })
   chainId: number;
 
+  // Last fully indexed "safe" block. This is the resume cursor for the indexer.
+  @Prop({ type: Number, default: null })
+  lastIndexedBlock!: number | null;
+
   // "Safe" scanned block (tip minus reorg safety blocks).
   @Prop({ type: Number, default: null })
   lastFinalizedBlock!: number | null;
