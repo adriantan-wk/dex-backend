@@ -5,6 +5,8 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import type { Model } from 'mongoose';
+import { Burn } from './schemas/burn.schema';
+import { Mint } from './schemas/mint.schema';
 import { Swap } from './schemas/swap.schema';
 
 @Controller('monitoring')
@@ -12,6 +14,10 @@ export class MonitoringController {
   constructor(
     @InjectModel(Swap.name)
     private readonly swapModel: Model<Swap>,
+    @InjectModel(Mint.name)
+    private readonly mintModel: Model<Mint>,
+    @InjectModel(Burn.name)
+    private readonly burnModel: Model<Burn>,
   ) {}
 
   @Get('swaps')
@@ -58,6 +64,95 @@ export class MonitoringController {
         amountUsd: 1,
         sender: 1,
         recipient: 1,
+      })
+      .sort({ blockNumber: -1, logIndex: -1 })
+      .limit(limit)
+      .lean();
+
+    return { items: rows };
+  }
+
+  @Get('mints')
+  async listMints(
+    @Query('chainId') chainIdRaw?: string,
+    @Query('poolAddress') poolAddress?: string,
+    @Query('limit') limitRaw?: string,
+  ) {
+    const chainId = Number(chainIdRaw ?? 56);
+    const limit = Math.min(Math.max(Number(limitRaw ?? 25), 1), 200);
+
+    const filter: Record<string, unknown> = { chainId };
+
+    if (poolAddress?.trim()) {
+      filter.poolAddress = poolAddress.trim().toLowerCase();
+    }
+
+    const rows = await this.mintModel
+      .find(filter, {
+        _id: 0,
+        chainId: 1,
+        blockNumber: 1,
+        txHash: 1,
+        logIndex: 1,
+        poolAddress: 1,
+        protocol: 1,
+        timestamp: 1,
+        token0: 1,
+        token1: 1,
+        amount0: 1,
+        amount1: 1,
+        liquidity: 1,
+        tickLower: 1,
+        tickUpper: 1,
+        sender: 1,
+        owner: 1,
+        amountUsd: 1,
+        fee: 1,
+      })
+      .sort({ blockNumber: -1, logIndex: -1 })
+      .limit(limit)
+      .lean();
+
+    return { items: rows };
+  }
+
+  @Get('burns')
+  async listBurns(
+    @Query('chainId') chainIdRaw?: string,
+    @Query('poolAddress') poolAddress?: string,
+    @Query('limit') limitRaw?: string,
+  ) {
+    const chainId = Number(chainIdRaw ?? 56);
+    const limit = Math.min(Math.max(Number(limitRaw ?? 25), 1), 200);
+
+    const filter: Record<string, unknown> = { chainId };
+
+    if (poolAddress?.trim()) {
+      filter.poolAddress = poolAddress.trim().toLowerCase();
+    }
+
+    const rows = await this.burnModel
+      .find(filter, {
+        _id: 0,
+        chainId: 1,
+        blockNumber: 1,
+        txHash: 1,
+        logIndex: 1,
+        poolAddress: 1,
+        protocol: 1,
+        timestamp: 1,
+        token0: 1,
+        token1: 1,
+        amount0: 1,
+        amount1: 1,
+        liquidity: 1,
+        tickLower: 1,
+        tickUpper: 1,
+        sender: 1,
+        owner: 1,
+        recipient: 1,
+        amountUsd: 1,
+        fee: 1,
       })
       .sort({ blockNumber: -1, logIndex: -1 })
       .limit(limit)
