@@ -14,8 +14,10 @@ import {
   parseAbiItem,
 } from 'viem';
 import { bsc, bscTestnet } from 'viem/chains';
+import { Burn } from './schemas/burn.schema';
 import { DexEvent } from './schemas/dex-event.schema';
 import { IndexerState } from './schemas/indexer-state.schema';
+import { Mint } from './schemas/mint.schema';
 import { PoolWatch } from './schemas/pool-watch.schema';
 import type { DexProtocol } from './schemas/swap.schema';
 import { Swap } from './schemas/swap.schema';
@@ -34,14 +36,43 @@ const v3SwapEvent = parseAbiItem(
   'event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)',
 );
 
+const v2MintEvent = parseAbiItem(
+  'event Mint(address indexed sender, uint256 amount0, uint256 amount1)',
+);
+
+const v2BurnEvent = parseAbiItem(
+  'event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to)',
+);
+
+const v3MintEvent = parseAbiItem(
+  'event Mint(address sender, address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1)',
+);
+
+const v3BurnEvent = parseAbiItem(
+  'event Burn(address indexed owner, int24 indexed tickLower, int24 indexed tickUpper, uint128 liquidity, uint256 amount0, uint256 amount1)',
+);
+
 const v2SwapTopic = getEventSelector(v2SwapEvent);
 const v3SwapTopic = getEventSelector(v3SwapEvent);
+const v2MintTopic = getEventSelector(v2MintEvent);
+const v2BurnTopic = getEventSelector(v2BurnEvent);
+const v3MintTopic = getEventSelector(v3MintEvent);
+const v3BurnTopic = getEventSelector(v3BurnEvent);
+
+const poolEventTopics = [
+  v2SwapTopic,
+  v3SwapTopic,
+  v2MintTopic,
+  v2BurnTopic,
+  v3MintTopic,
+  v3BurnTopic,
+] as const;
 
 const token0Fn = parseAbiItem('function token0() view returns (address)');
 const token1Fn = parseAbiItem('function token1() view returns (address)');
 const feeFn = parseAbiItem('function fee() view returns (uint24)');
 
-type RawSwapLog = {
+type RawPoolLog = {
   address: string;
   blockNumber: bigint;
   data: `0x${string}`;
@@ -50,9 +81,9 @@ type RawSwapLog = {
   transactionHash: `0x${string}`;
 };
 
-function isRawSwapLog(v: unknown): v is RawSwapLog {
+function isRawPoolLog(v: unknown): v is RawPoolLog {
   if (!v || typeof v !== 'object') return false;
-  const r = v as Partial<RawSwapLog>;
+  const r = v as Partial<RawPoolLog>;
   return (
     typeof r.address === 'string' &&
     typeof r.transactionHash === 'string' &&
@@ -99,6 +130,10 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     private readonly dexEventModel: Model<DexEvent>,
     @InjectModel(Swap.name)
     private readonly swapModel: Model<Swap>,
+    @InjectModel(Mint.name)
+    private readonly mintModel: Model<Mint>,
+    @InjectModel(Burn.name)
+    private readonly burnModel: Model<Burn>,
   ) {}
 
   onModuleInit() {
@@ -192,7 +227,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       );
 
       if (lastFinalizedBlock !== null && this.publicClient) {
-        await this.indexSwapLogsUpTo(chainId, lastFinalizedBlock, batchBlocks);
+        await this.indexPoolLogsUpTo(chainId, lastFinalizedBlock, batchBlocks);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -202,7 +237,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async indexSwapLogsUpTo(
+  private async indexPoolLogsUpTo(
     chainId: number,
     safeTip: number,
     batchBlocks: number,
@@ -252,9 +287,9 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const logs = await this.fetchSwapLogs(addresses, fromBlock, toBlock);
+    const logs = await this.fetchPoolLogs(addresses, fromBlock, toBlock);
     if (logs.length > 0) {
-      await this.ingestSwapLogs(chainId, logs);
+      await this.ingestPoolLogs(chainId, logs);
     }
 
     await this.indexerStateModel.updateOne(
@@ -264,11 +299,11 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     );
 
     this.logger.debug(
-      `Indexed blocks [${fromBlock}, ${toBlock}] swaps=${logs.length} watchedPools=${addresses.length}`,
+      `Indexed blocks [${fromBlock}, ${toBlock}] poolLogs=${logs.length} watchedPools=${addresses.length}`,
     );
   }
 
-  private async fetchSwapLogs(
+  private async fetchPoolLogs(
     lowercasedAddresses: string[],
     fromBlock: number,
     toBlock: number,
@@ -277,9 +312,9 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
 
     // Many RPCs have limits on how many addresses you can query at once.
     const chunkSize = Number(process.env.INDEXER_ADDRESS_CHUNK ?? 50);
-    const topics = [[v2SwapTopic, v3SwapTopic]];
+    const topics = [[...poolEventTopics]];
 
-    const out: RawSwapLog[] = [];
+    const out: RawPoolLog[] = [];
     for (let i = 0; i < lowercasedAddresses.length; i += chunkSize) {
       const chunk = lowercasedAddresses.slice(i, i + chunkSize);
       const rows = await this.publicClient.getLogs({
@@ -290,13 +325,13 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       });
 
       for (const row of rows) {
-        if (isRawSwapLog(row)) out.push(row);
+        if (isRawPoolLog(row)) out.push(row);
       }
     }
     return out;
   }
 
-  private async ingestSwapLogs(chainId: number, logs: RawSwapLog[]) {
+  private async ingestPoolLogs(chainId: number, logs: RawPoolLog[]) {
     if (!this.publicClient) return;
 
     const blocks = new Set<number>();
@@ -307,7 +342,10 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       blocks.add(Number(log.blockNumber));
       const key = log.address.toLowerCase();
       poolKeys.add(key);
-      if (log.topics[0] === v3SwapTopic) v3Pools.add(key);
+      const t0 = log.topics[0];
+      if (t0 === v3SwapTopic || t0 === v3MintTopic || t0 === v3BurnTopic) {
+        v3Pools.add(key);
+      }
     }
 
     const timestamps = new Map<number, number>();
@@ -371,7 +409,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       meta.set(key, entry);
     }
 
-    type DecodedV2Args = {
+    type DecodedV2SwapArgs = {
       sender: `0x${string}`;
       to: `0x${string}`;
       amount0In: bigint;
@@ -380,7 +418,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       amount1Out: bigint;
     };
 
-    type DecodedV3Args = {
+    type DecodedV3SwapArgs = {
       sender: `0x${string}`;
       recipient: `0x${string}`;
       amount0: bigint;
@@ -388,6 +426,49 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       sqrtPriceX96: bigint;
       liquidity: bigint;
       tick: number;
+    };
+
+    type DecodedV2MintArgs = {
+      sender: `0x${string}`;
+      amount0: bigint;
+      amount1: bigint;
+    };
+
+    type DecodedV2BurnArgs = {
+      sender: `0x${string}`;
+      amount0: bigint;
+      amount1: bigint;
+      to: `0x${string}`;
+    };
+
+    type DecodedV3MintArgs = {
+      sender: `0x${string}`;
+      owner: `0x${string}`;
+      tickLower: number;
+      tickUpper: number;
+      amount: bigint;
+      amount0: bigint;
+      amount1: bigint;
+    };
+
+    type DecodedV3BurnArgs = {
+      owner: `0x${string}`;
+      tickLower: number;
+      tickUpper: number;
+      liquidity: bigint;
+      amount0: bigint;
+      amount1: bigint;
+    };
+
+    const attachPoolMeta = (
+      data: Record<string, unknown>,
+      m: { token0?: string; token1?: string; fee?: number },
+      timestamp: number | undefined,
+    ) => {
+      if (m.token0) data.token0 = m.token0;
+      if (m.token1) data.token1 = m.token1;
+      if (m.fee !== undefined) data.fee = m.fee;
+      if (timestamp !== undefined) data.timestamp = timestamp;
     };
 
     for (const log of logs) {
@@ -403,83 +484,205 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
             ])
           : ([] as []);
 
-      let decoded:
-        | { kind: 'v2'; args: DecodedV2Args }
-        | { kind: 'v3'; args: DecodedV3Args }
-        | null = null;
-      try {
-        const d = decodeEventLog({
-          abi: [v2SwapEvent],
-          data: log.data,
-          topics: topicsForDecode,
-        });
-        decoded = { kind: 'v2', args: d.args as unknown as DecodedV2Args };
-      } catch {
-        // not v2
+      const topic0 = log.topics[0];
+      const blockNumber = Number(log.blockNumber);
+      const logIndex = Number(log.logIndex);
+      const txHash = log.transactionHash;
+      const ts = timestamps.get(blockNumber);
+
+      if (topic0 === v2SwapTopic) {
+        try {
+          const d = decodeEventLog({
+            abi: [v2SwapEvent],
+            data: log.data,
+            topics: topicsForDecode,
+          });
+          const args = d.args as unknown as DecodedV2SwapArgs;
+          const data: Record<string, unknown> = {
+            sender: args.sender,
+            to: args.to,
+            amount0In: args.amount0In.toString(),
+            amount1In: args.amount1In.toString(),
+            amount0Out: args.amount0Out.toString(),
+            amount1Out: args.amount1Out.toString(),
+          };
+          attachPoolMeta(data, m, ts);
+          await this.ingestDexEvent({
+            chainId,
+            blockNumber,
+            logIndex,
+            txHash,
+            address,
+            eventType: 'Swap',
+            data,
+          });
+        } catch {
+          // malformed log for this signature
+        }
+        continue;
       }
 
-      if (!decoded) {
+      if (topic0 === v3SwapTopic) {
         try {
           const d = decodeEventLog({
             abi: [v3SwapEvent],
             data: log.data,
             topics: topicsForDecode,
           });
-          decoded = { kind: 'v3', args: d.args as unknown as DecodedV3Args };
+          const args = d.args as unknown as DecodedV3SwapArgs;
+          const data: Record<string, unknown> = {
+            sender: args.sender,
+            recipient: args.recipient,
+            amount0: args.amount0.toString(),
+            amount1: args.amount1.toString(),
+            sqrtPriceX96: args.sqrtPriceX96.toString(),
+            liquidity: args.liquidity.toString(),
+            tick: Number(args.tick),
+          };
+          attachPoolMeta(data, m, ts);
+          await this.ingestDexEvent({
+            chainId,
+            blockNumber,
+            logIndex,
+            txHash,
+            address,
+            eventType: 'Swap',
+            data,
+          });
         } catch {
-          // not v3
+          // malformed
         }
+        continue;
       }
 
-      if (!decoded) continue;
+      if (topic0 === v2MintTopic) {
+        try {
+          const d = decodeEventLog({
+            abi: [v2MintEvent],
+            data: log.data,
+            topics: topicsForDecode,
+          });
+          const args = d.args as unknown as DecodedV2MintArgs;
+          const data: Record<string, unknown> = {
+            sender: args.sender,
+            amount0: args.amount0.toString(),
+            amount1: args.amount1.toString(),
+          };
+          attachPoolMeta(data, m, ts);
+          await this.ingestDexEvent({
+            chainId,
+            blockNumber,
+            logIndex,
+            txHash,
+            address,
+            eventType: 'Mint',
+            data,
+          });
+        } catch {
+          // malformed
+        }
+        continue;
+      }
 
-      const blockNumber = Number(log.blockNumber);
-      const logIndex = Number(log.logIndex);
-      const txHash = log.transactionHash;
+      if (topic0 === v2BurnTopic) {
+        try {
+          const d = decodeEventLog({
+            abi: [v2BurnEvent],
+            data: log.data,
+            topics: topicsForDecode,
+          });
+          const args = d.args as unknown as DecodedV2BurnArgs;
+          const data: Record<string, unknown> = {
+            sender: args.sender,
+            amount0: args.amount0.toString(),
+            amount1: args.amount1.toString(),
+            to: args.to,
+          };
+          attachPoolMeta(data, m, ts);
+          await this.ingestDexEvent({
+            chainId,
+            blockNumber,
+            logIndex,
+            txHash,
+            address,
+            eventType: 'Burn',
+            data,
+          });
+        } catch {
+          // malformed
+        }
+        continue;
+      }
 
-      const timestamp = timestamps.get(blockNumber);
+      if (topic0 === v3MintTopic) {
+        try {
+          const d = decodeEventLog({
+            abi: [v3MintEvent],
+            data: log.data,
+            topics: topicsForDecode,
+          });
+          const args = d.args as unknown as DecodedV3MintArgs;
+          const data: Record<string, unknown> = {
+            sender: args.sender,
+            owner: args.owner,
+            tickLower: Number(args.tickLower),
+            tickUpper: Number(args.tickUpper),
+            liquidity: args.amount.toString(),
+            amount0: args.amount0.toString(),
+            amount1: args.amount1.toString(),
+          };
+          attachPoolMeta(data, m, ts);
+          await this.ingestDexEvent({
+            chainId,
+            blockNumber,
+            logIndex,
+            txHash,
+            address,
+            eventType: 'Mint',
+            data,
+          });
+        } catch {
+          // malformed
+        }
+        continue;
+      }
 
-      const data: Record<string, unknown> =
-        decoded.kind === 'v2'
-          ? {
-              sender: decoded.args.sender,
-              to: decoded.args.to,
-              amount0In: decoded.args.amount0In.toString(),
-              amount1In: decoded.args.amount1In.toString(),
-              amount0Out: decoded.args.amount0Out.toString(),
-              amount1Out: decoded.args.amount1Out.toString(),
-            }
-          : {
-              sender: decoded.args.sender,
-              recipient: decoded.args.recipient,
-              amount0: decoded.args.amount0.toString(),
-              amount1: decoded.args.amount1.toString(),
-              sqrtPriceX96: decoded.args.sqrtPriceX96.toString(),
-              liquidity: decoded.args.liquidity.toString(),
-              tick: Number(decoded.args.tick),
-            };
-
-      if (m.token0) data.token0 = m.token0;
-      if (m.token1) data.token1 = m.token1;
-      if (m.fee !== undefined) data.fee = m.fee;
-      if (timestamp !== undefined) data.timestamp = timestamp;
-
-      await this.ingestDexEvent({
-        chainId,
-        blockNumber,
-        logIndex,
-        txHash,
-        address,
-        eventType: 'Swap',
-        data,
-      });
+      if (topic0 === v3BurnTopic) {
+        try {
+          const d = decodeEventLog({
+            abi: [v3BurnEvent],
+            data: log.data,
+            topics: topicsForDecode,
+          });
+          const args = d.args as unknown as DecodedV3BurnArgs;
+          const data: Record<string, unknown> = {
+            owner: args.owner,
+            tickLower: Number(args.tickLower),
+            tickUpper: Number(args.tickUpper),
+            liquidity: args.liquidity.toString(),
+            amount0: args.amount0.toString(),
+            amount1: args.amount1.toString(),
+          };
+          attachPoolMeta(data, m, ts);
+          await this.ingestDexEvent({
+            chainId,
+            blockNumber,
+            logIndex,
+            txHash,
+            address,
+            eventType: 'Burn',
+            data,
+          });
+        } catch {
+          // malformed
+        }
+      }
     }
   }
 
   /**
-   * Entry point for your future on-chain polling/decoding loop.
-   * - Upserts the raw `dex_events` record (append-only semantics via unique index)
-   * - If the event is a Swap, materializes a normalized row in `swaps`
+   * Upserts the raw `dex_events` record (append-only semantics via unique index)
+   * and materializes normalized rows in `swaps`, `mints`, or `burns`.
    */
   async ingestDexEvent(evt: DexEventInput) {
     // 1) Raw log (canonical)
@@ -503,12 +706,44 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
       { upsert: true },
     );
 
-    // 2) Derived swaps
+    // 2) Derived domain rows
     if (evt.eventType === 'Swap') {
       const normalized = this.normalizeSwap(evt);
       if (!normalized) return;
 
       await this.swapModel.updateOne(
+        {
+          chainId: normalized.chainId,
+          txHash: normalized.txHash,
+          logIndex: normalized.logIndex,
+        },
+        { $set: normalized },
+        { upsert: true },
+      );
+      return;
+    }
+
+    if (evt.eventType === 'Mint') {
+      const normalized = this.normalizeMint(evt);
+      if (!normalized) return;
+
+      await this.mintModel.updateOne(
+        {
+          chainId: normalized.chainId,
+          txHash: normalized.txHash,
+          logIndex: normalized.logIndex,
+        },
+        { $set: normalized },
+        { upsert: true },
+      );
+      return;
+    }
+
+    if (evt.eventType === 'Burn') {
+      const normalized = this.normalizeBurn(evt);
+      if (!normalized) return;
+
+      await this.burnModel.updateOne(
         {
           chainId: normalized.chainId,
           txHash: normalized.txHash,
@@ -618,6 +853,143 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
         typeof data.sqrtPriceX96 === 'string' ? data.sqrtPriceX96 : null,
       tick: typeof data.tick === 'number' ? data.tick : null,
       liquidity: typeof data.liquidity === 'string' ? data.liquidity : null,
+      fee: typeof data.fee === 'number' ? data.fee : null,
+    };
+  }
+
+  private normalizeMint(evt: DexEventInput): Partial<Mint> | null {
+    const data = evt.data ?? {};
+
+    const timestamp =
+      typeof data.timestamp === 'number'
+        ? new Date(data.timestamp * 1000)
+        : data.timestamp instanceof Date
+          ? data.timestamp
+          : null;
+
+    const protocol: DexProtocol =
+      typeof data.tickLower === 'number' && typeof data.tickUpper === 'number'
+        ? 'v3'
+        : 'v2';
+
+    const token0 = asAddress(data.token0);
+    const token1 = asAddress(data.token1);
+    const amount0 = asBigintString(data.amount0);
+    const amount1 = asBigintString(data.amount1);
+    const sender = asAddress(data.sender);
+    const owner = asAddress(data.owner);
+
+    if (protocol === 'v2') {
+      return {
+        chainId: evt.chainId,
+        blockNumber: evt.blockNumber,
+        txHash: evt.txHash,
+        logIndex: evt.logIndex,
+        poolAddress: asAddress(evt.address) ?? evt.address,
+        protocol,
+        timestamp,
+        token0,
+        token1,
+        amount0,
+        amount1,
+        liquidity: null,
+        tickLower: null,
+        tickUpper: null,
+        sender,
+        owner: null,
+        amountUsd: typeof data.amountUsd === 'string' ? data.amountUsd : null,
+        fee: typeof data.fee === 'number' ? data.fee : null,
+      };
+    }
+
+    return {
+      chainId: evt.chainId,
+      blockNumber: evt.blockNumber,
+      txHash: evt.txHash,
+      logIndex: evt.logIndex,
+      poolAddress: asAddress(evt.address) ?? evt.address,
+      protocol,
+      timestamp,
+      token0,
+      token1,
+      amount0,
+      amount1,
+      liquidity: typeof data.liquidity === 'string' ? data.liquidity : null,
+      tickLower: typeof data.tickLower === 'number' ? data.tickLower : null,
+      tickUpper: typeof data.tickUpper === 'number' ? data.tickUpper : null,
+      sender,
+      owner,
+      amountUsd: typeof data.amountUsd === 'string' ? data.amountUsd : null,
+      fee: typeof data.fee === 'number' ? data.fee : null,
+    };
+  }
+
+  private normalizeBurn(evt: DexEventInput): Partial<Burn> | null {
+    const data = evt.data ?? {};
+
+    const timestamp =
+      typeof data.timestamp === 'number'
+        ? new Date(data.timestamp * 1000)
+        : data.timestamp instanceof Date
+          ? data.timestamp
+          : null;
+
+    const protocol: DexProtocol =
+      typeof data.tickLower === 'number' && typeof data.tickUpper === 'number'
+        ? 'v3'
+        : 'v2';
+
+    const token0 = asAddress(data.token0);
+    const token1 = asAddress(data.token1);
+    const amount0 = asBigintString(data.amount0);
+    const amount1 = asBigintString(data.amount1);
+    const sender = asAddress(data.sender);
+    const owner = asAddress(data.owner);
+    const recipient = asAddress(data.to);
+
+    if (protocol === 'v2') {
+      return {
+        chainId: evt.chainId,
+        blockNumber: evt.blockNumber,
+        txHash: evt.txHash,
+        logIndex: evt.logIndex,
+        poolAddress: asAddress(evt.address) ?? evt.address,
+        protocol,
+        timestamp,
+        token0,
+        token1,
+        amount0,
+        amount1,
+        liquidity: null,
+        tickLower: null,
+        tickUpper: null,
+        sender,
+        owner: null,
+        recipient,
+        amountUsd: typeof data.amountUsd === 'string' ? data.amountUsd : null,
+        fee: typeof data.fee === 'number' ? data.fee : null,
+      };
+    }
+
+    return {
+      chainId: evt.chainId,
+      blockNumber: evt.blockNumber,
+      txHash: evt.txHash,
+      logIndex: evt.logIndex,
+      poolAddress: asAddress(evt.address) ?? evt.address,
+      protocol,
+      timestamp,
+      token0,
+      token1,
+      amount0,
+      amount1,
+      liquidity: typeof data.liquidity === 'string' ? data.liquidity : null,
+      tickLower: typeof data.tickLower === 'number' ? data.tickLower : null,
+      tickUpper: typeof data.tickUpper === 'number' ? data.tickUpper : null,
+      sender: null,
+      owner,
+      recipient: null,
+      amountUsd: typeof data.amountUsd === 'string' ? data.amountUsd : null,
       fee: typeof data.fee === 'number' ? data.fee : null,
     };
   }
