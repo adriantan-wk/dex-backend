@@ -4,11 +4,13 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { MonitoringModule } from './monitoring/monitoring.module';
+import monitoringConfig from './config/monitoring.config';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      load: [monitoringConfig],
     }),
     MongooseModule.forRootAsync({
       inject: [ConfigService],

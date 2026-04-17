@@ -4,6 +4,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import type { Model } from 'mongoose';
 import {
@@ -13,7 +14,7 @@ import {
   http,
   parseAbiItem,
 } from 'viem';
-import { bsc, bscTestnet } from 'viem/chains';
+import { bsc } from 'viem/chains';
 import { DexEvent } from './schemas/dex-event.schema';
 import { IndexerState } from './schemas/indexer-state.schema';
 import { PoolWatch } from './schemas/pool-watch.schema';
@@ -25,6 +26,11 @@ import {
   asSignedBigintString,
   parseSignedBigint,
 } from './utils/coerce';
+import type { MonitoringConfig } from '../config/monitoring.config';
+
+const chainsById = {
+  [bsc.id]: bsc,
+} as const;
 
 const v2SwapEvent = parseAbiItem(
   'event Swap(address indexed sender, uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out, address indexed to)',
@@ -91,6 +97,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
   private isTickRunning = false;
 
   constructor(
+    private readonly config: ConfigService,
     @InjectModel(IndexerState.name)
     private readonly indexerStateModel: Model<IndexerState>,
     @InjectModel(PoolWatch.name)
@@ -100,6 +107,10 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     @InjectModel(Swap.name)
     private readonly swapModel: Model<Swap>,
   ) {}
+
+  private get monitoring(): MonitoringConfig {
+    return this.config.getOrThrow<MonitoringConfig>('monitoring');
+  }
 
   onModuleInit() {
     this.startHeartbeat();
@@ -114,10 +125,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     // Prevent creating duplicate timers during hot-reload.
     if (this.heartbeatTimer) return;
 
-    const chainId = Number(process.env.CHAIN_ID ?? 56); // BSC by default
-    const pollMs = Number(process.env.INDEXER_POLL_MS ?? 10_000);
-    const reorgSafetyBlocks = Number(process.env.REORG_SAFETY_BLOCKS ?? 5);
-    const batchBlocks = Number(process.env.INDEXER_BATCH_BLOCKS ?? 2_000);
+    const { chainId, pollMs, reorgSafetyBlocks, batchBlocks } = this.monitoring;
 
     this.publicClient = this.buildPublicClient();
 
@@ -133,29 +141,29 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     void this.tick(chainId, reorgSafetyBlocks, batchBlocks);
   }
 
-  private buildPublicClient() {
-    const explicit = (process.env.RPC_URL ?? '').trim();
-    const infuraKey = (process.env.INFURA_API_KEY ?? '').trim();
-    const chainId = Number(process.env.CHAIN_ID ?? 56);
+  private buildPublicClient(): PublicClientLike | null {
+    const { rpcUrl: explicit, chainId } = this.monitoring;
 
-    const rpcUrl =
-      explicit ||
-      (infuraKey
-        ? // BSC mainnet default. You can override by setting RPC_URL directly.
-          `https://bsc-mainnet.infura.io/v3/${infuraKey}`
-        : '');
+    const rpcUrl = explicit;
 
     if (!rpcUrl) {
       this.logger.warn(
-        'RPC is not configured. Set RPC_URL or INFURA_API_KEY in .env to enable chain polling.',
+        'RPC is not configured. Set monitoringSettings.rpcUrl to enable chain polling.',
       );
+      return null;
     }
 
-    const chain = chainId === bscTestnet.id ? bscTestnet : bsc;
+    const chain = chainsById[chainId as keyof typeof chainsById];
+    if (!chain) {
+      this.logger.warn(
+        `Unsupported chainId=${chainId}. Add it to chainsById to enable chain polling.`,
+      );
+      return null;
+    }
 
     return createPublicClient({
       chain,
-      transport: http(rpcUrl || 'http://localhost'),
+      transport: http(rpcUrl),
     }) as unknown as PublicClientLike;
   }
 
@@ -207,8 +215,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     safeTip: number,
     batchBlocks: number,
   ) {
-    const startBlockEnv = (process.env.INDEXER_START_BLOCK ?? '').trim();
-    const startBlock = startBlockEnv ? Number(startBlockEnv) : null;
+    const startBlock = this.monitoring.startBlock;
 
     const state = (await this.indexerStateModel
       .findOne({ chainId }, { _id: 0, lastIndexedBlock: 1 })
@@ -276,7 +283,7 @@ export class MonitoringService implements OnModuleInit, OnModuleDestroy {
     if (!this.publicClient) return [];
 
     // Many RPCs have limits on how many addresses you can query at once.
-    const chunkSize = Number(process.env.INDEXER_ADDRESS_CHUNK ?? 50);
+    const chunkSize = this.monitoring.addressChunk;
     const topics = [[v2SwapTopic, v3SwapTopic]];
 
     const out: RawSwapLog[] = [];
