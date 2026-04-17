@@ -1,7 +1,7 @@
-# Local MongoDB for development. From repo root:
-#   docker compose -f docker-compose.mongodb.yml up -d
+# Local MongoDB for development (MongoDB 8.x). From dex-backend:
+#   docker compose up -d
 # Stop (keeps data volume):
-#   docker compose -f docker-compose.mongodb.yml down
+#   docker compose down
 #
 # Host port 27018 avoids clashing with another Mongo on 27017.
 # Connection string:
@@ -14,7 +14,7 @@
 
 services:
   mongodb:
-    image: mongo:7
+    image: mongo:8
     container_name: dex-mongodb
     restart: unless-stopped
     ports:
