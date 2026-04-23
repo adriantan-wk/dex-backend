@@ -11,6 +11,14 @@ import {
   PointsLedgerEntry,
   PointsLedgerEntrySchema,
 } from './schemas/points-ledger-entry.schema';
+import {
+  PointsSeasonState,
+  PointsSeasonStateSchema,
+} from './schemas/points-season-state.schema';
+import {
+  PointsSeasonSnapshot,
+  PointsSeasonSnapshotSchema,
+} from './schemas/points-season-snapshot.schema';
 
 @Module({
   imports: [
@@ -18,6 +26,8 @@ import {
       { name: PointsAccount.name, schema: PointsAccountSchema },
       { name: PointsDaily.name, schema: PointsDailySchema },
       { name: PointsLedgerEntry.name, schema: PointsLedgerEntrySchema },
+      { name: PointsSeasonState.name, schema: PointsSeasonStateSchema },
+      { name: PointsSeasonSnapshot.name, schema: PointsSeasonSnapshotSchema },
     ]),
   ],
   controllers: [PointsController],

@@ -14,11 +14,20 @@ type AwardSwapBody = {
 export class PointsController {
   constructor(private readonly pointsService: PointsService) {}
 
+  @Get('seasons')
+  async seasons() {
+    return this.pointsService.listSeasons();
+  }
+
   @Get('leaderboard')
-  async leaderboard(@Query('limit') limit?: string) {
+  async leaderboard(
+    @Query('limit') limit?: string,
+    @Query('season') season?: string,
+  ) {
     const parsed = limit ? Number(limit) : 50;
     return this.pointsService.getLeaderboard(
       Number.isFinite(parsed) ? parsed : 50,
+      season,
     );
   }
 
