@@ -5,8 +5,12 @@ export type PointsAccountDocument = HydratedDocument<PointsAccount>;
 
 @Schema({ collection: 'points_accounts', timestamps: true })
 export class PointsAccount {
-  @Prop({ type: String, required: true, unique: true, index: true })
+  @Prop({ type: String, required: true, index: true })
   address!: string;
+
+  /** Incrementing season number (1, 2, 3, ...) */
+  @Prop({ type: Number, required: true, index: true })
+  seasonId!: number;
 
   // Single points total for swaps (can diverge from USD volume over time).
   @Prop({
@@ -42,3 +46,12 @@ export class PointsAccount {
 }
 
 export const PointsAccountSchema = SchemaFactory.createForClass(PointsAccount);
+
+PointsAccountSchema.index(
+  { address: 1, seasonId: 1 },
+  { unique: true, name: 'uniq_address_season' },
+);
+PointsAccountSchema.index(
+  { seasonId: 1, swapPoints: -1, swapUsdVolume: -1, address: 1 },
+  { name: 'by_season_points_rank' },
+);

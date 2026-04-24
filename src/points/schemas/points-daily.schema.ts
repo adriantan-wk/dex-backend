@@ -11,7 +11,11 @@ export class PointsDaily {
   @Prop({ type: String, required: true, index: true })
   address!: string;
 
-  // UTC day index: floor(unixSeconds / 86400)
+  /** Incrementing season number (1, 2, 3, ...) */
+  @Prop({ type: Number, required: true, index: true })
+  seasonId!: number;
+
+  // Streak bucket index: see `points-time.config.ts` (`utcDayIndexFromUnixSeconds`).
   @Prop({ type: Number, required: true })
   dayIndex!: number;
 
@@ -25,6 +29,6 @@ export class PointsDaily {
 export const PointsDailySchema = SchemaFactory.createForClass(PointsDaily);
 
 PointsDailySchema.index(
-  { address: 1, dayIndex: 1 },
-  { unique: true, name: 'uniq_address_day' },
+  { address: 1, seasonId: 1, dayIndex: 1 },
+  { unique: true, name: 'uniq_address_season_day' },
 );

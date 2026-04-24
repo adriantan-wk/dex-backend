@@ -13,6 +13,14 @@ export class PointsLedgerEntry {
   @Prop({ type: String, required: true, index: true })
   address!: string;
 
+  /** Incrementing season number (1, 2, 3, ...) */
+  @Prop({ type: Number, required: true, index: true })
+  seasonId!: number;
+
+  /** Points account row this award applied to (address+season). */
+  @Prop({ type: Types.ObjectId, required: false, index: true })
+  pointsAccountId?: Types.ObjectId;
+
   @Prop({ type: String, required: true })
   sourceType!: PointsSourceType;
 
@@ -41,7 +49,7 @@ export class PointsLedgerEntry {
   @Prop({ type: Number, required: true, default: 1 })
   streakDay!: number;
 
-  // UTC day index at award-time: floor(unixSeconds / 86400)
+  // Streak bucket index at award-time: see `points-time.config.ts`.
   @Prop({ type: Number, required: true })
   dayIndex!: number;
 
@@ -63,4 +71,8 @@ PointsLedgerEntrySchema.index(
 PointsLedgerEntrySchema.index(
   { address: 1, createdAt: -1 },
   { name: 'by_address_recent' },
+);
+PointsLedgerEntrySchema.index(
+  { seasonId: 1, address: 1, createdAt: -1 },
+  { name: 'by_season_address_recent' },
 );

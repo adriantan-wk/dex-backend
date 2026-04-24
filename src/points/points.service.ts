@@ -3,6 +3,11 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import BigNumber from 'bignumber.js';
 import {
+  utcDayIndexFromUnixSeconds,
+  utcMonthIndexFromSeasonKey,
+  utcSeasonMonthKeyFromDate,
+} from './points-time.config';
+import {
   PointsAccount,
   PointsAccountDocument,
 } from './schemas/points-account.schema';
@@ -18,14 +23,13 @@ import {
   PointsSeasonState,
   PointsSeasonStateDocument,
 } from './schemas/points-season-state.schema';
-import {
-  PointsSeasonLeaderboardRow,
-  PointsSeasonSnapshot,
-  PointsSeasonSnapshotDocument,
-} from './schemas/points-season-snapshot.schema';
 
-const SEASON_ID_REGEX = /^\d{4}-\d{2}$/;
-const ZERO = () => Types.Decimal128.fromString('0');
+type LeaderboardRow = {
+  address: string;
+  swapPoints: string;
+  swapUsdVolume: string;
+};
+type LeaderboardMy = null | { rank: number | null; row: LeaderboardRow | null };
 
 function normalizeAddress(address: string): string {
   return address.trim().toLowerCase();
@@ -56,34 +60,10 @@ function decimalToString(d: Types.Decimal128): string {
   return d.toString();
 }
 
-function utcDayIndexFromUnixSeconds(unixSeconds: number): number {
-  return Math.floor(unixSeconds / 86400);
-}
-
 function multiplierForStreakDay(streakDay: number): BigNumber {
   const d = Math.max(1, Math.floor(streakDay));
   const m = new BigNumber('1').plus(new BigNumber('0.1').times(d - 1));
   return BigNumber.minimum(m, new BigNumber('2.0'));
-}
-
-/** UTC calendar month key: YYYY-MM */
-function utcSeasonIdFromDate(d: Date): string {
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth() + 1;
-  return `${y}-${String(m).padStart(2, '0')}`;
-}
-
-function nextUtcSeasonId(seasonId: string): string {
-  const [ys, ms] = seasonId.split('-');
-  const y = Number(ys);
-  const mo = Number(ms);
-  const d = new Date(Date.UTC(y, mo - 1 + 1, 1));
-  return utcSeasonIdFromDate(d);
-}
-
-function compareSeasonId(a: string, b: string): number {
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
 }
 
 @Injectable()
@@ -99,128 +79,145 @@ export class PointsService implements OnModuleInit {
     private readonly ledgerModel: Model<PointsLedgerEntryDocument>,
     @InjectModel(PointsSeasonState.name)
     private readonly seasonStateModel: Model<PointsSeasonStateDocument>,
-    @InjectModel(PointsSeasonSnapshot.name)
-    private readonly seasonSnapshotModel: Model<PointsSeasonSnapshotDocument>,
   ) {}
 
   onModuleInit() {
     void this.ensureSeasonRollover().catch((e) =>
       this.logger.warn(`Season rollover on boot: ${String(e)}`),
     );
+    void this.bestEffortIndexCleanup().catch((e) =>
+      this.logger.warn(`Index cleanup on boot: ${String(e)}`),
+    );
+  }
+
+  private async bestEffortIndexCleanup(): Promise<void> {
+    // Mongoose won't drop old indexes automatically. These were previously unique
+    // and would prevent per-season rows.
+    try {
+      await this.accountModel.collection.dropIndex('address_1');
+    } catch {
+      // ignore (missing index / insufficient permissions)
+    }
+    try {
+      await this.dailyModel.collection.dropIndex('uniq_address_day');
+    } catch {
+      // ignore (missing index / insufficient permissions)
+    }
   }
 
   private async getOrInitSeasonStateRow(): Promise<PointsSeasonStateDocument> {
-    const target = utcSeasonIdFromDate(new Date());
+    const targetMonthKey = utcSeasonMonthKeyFromDate(new Date());
     await this.seasonStateModel.updateOne(
       {},
-      { $setOnInsert: { activeSeasonId: target } },
+      {
+        $setOnInsert: {
+          activeSeasonId: 1,
+          activeSeasonMonthKey: targetMonthKey,
+        },
+      },
       { upsert: true },
     );
     const row = await this.seasonStateModel.findOne({});
     if (!row) {
       throw new Error('points season state unavailable');
     }
+    if (
+      typeof row.activeSeasonId !== 'number' ||
+      !Number.isFinite(row.activeSeasonId) ||
+      typeof row.activeSeasonMonthKey !== 'string' ||
+      !row.activeSeasonMonthKey
+    ) {
+      throw new Error('points season state invalid');
+    }
     return row;
   }
 
   /**
-   * When UTC month advances, snapshot the top 50 for the ending season, reset
-   * swap totals and streak state, then move `activeSeasonId` forward (possibly
-   * across multiple months if the process was idle).
+   * When UTC month advances, move `activeSeasonId` forward (possibly across
+   * multiple months if the process was idle).
    */
   async ensureSeasonRollover(): Promise<void> {
-    const target = utcSeasonIdFromDate(new Date());
-    const maxSteps = 36;
+    const targetMonthKey = utcSeasonMonthKeyFromDate(new Date());
+    const targetIdx = utcMonthIndexFromSeasonKey(targetMonthKey);
+    if (targetIdx === null) return;
 
-    for (let step = 0; step < maxSteps; step++) {
+    // Avoid iterating one month at a time (tight loop + many `findOneAndUpdate` calls).
+    // Advance by the full month delta in a single atomic update when keys are valid.
+    const maxRetries = 5;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
       const row = await this.getOrInitSeasonStateRow();
-      if (compareSeasonId(row.activeSeasonId, target) >= 0) return;
 
-      const ending = row.activeSeasonId;
-      const nextId = nextUtcSeasonId(ending);
-
-      const top = await this.accountModel
-        .find({})
-        .sort({ swapPoints: -1 })
-        .limit(50)
-        .lean();
-
-      const entries: PointsSeasonLeaderboardRow[] = top.map((r, i) => ({
-        rank: i + 1,
-        address: r.address,
-        swapPoints: decimalToString(r.swapPoints),
-        swapUsdVolume: decimalToString(r.swapUsdVolume),
-      }));
-
-      await this.seasonSnapshotModel.updateOne(
-        { seasonId: ending },
-        {
-          $set: {
-            seasonId: ending,
-            finalizedAt: new Date(),
-            entries,
-          },
-        },
-        { upsert: true },
-      );
-
-      const advanced = await this.seasonStateModel.findOneAndUpdate(
-        { activeSeasonId: ending },
-        { $set: { activeSeasonId: nextId } },
-        { new: true },
-      );
-
-      if (!advanced) {
-        continue;
+      const currentIdx = utcMonthIndexFromSeasonKey(row.activeSeasonMonthKey);
+      if (currentIdx === null) {
+        throw new Error(
+          `points season state: activeSeasonMonthKey must be YYYY-MM, got ${JSON.stringify(row.activeSeasonMonthKey)}`,
+        );
       }
 
-      await this.accountModel.updateMany(
-        {},
+      if (currentIdx >= targetIdx) return;
+
+      const delta = targetIdx - currentIdx;
+      const advanced = await this.seasonStateModel.findOneAndUpdate(
         {
-          $set: {
-            swapPoints: ZERO(),
-            swapUsdVolume: ZERO(),
-            swapStreakDay: 0,
-            swapMultiplier: Types.Decimal128.fromString('1'),
-            lastSwapDayIndex: null,
-          },
+          activeSeasonId: row.activeSeasonId,
+          activeSeasonMonthKey: row.activeSeasonMonthKey,
         },
+        {
+          $set: { activeSeasonMonthKey: targetMonthKey },
+          $inc: { activeSeasonId: delta },
+        },
+        { returnDocument: 'after' },
       );
 
-      await this.dailyModel.deleteMany({});
+      if (advanced) return;
     }
   }
 
-  async getActiveSeasonId(): Promise<string> {
+  async getActiveSeasonId(): Promise<number> {
     const row = await this.getOrInitSeasonStateRow();
     return row.activeSeasonId;
   }
 
-  async listSeasons(): Promise<{ seasons: string[]; activeSeasonId: string }> {
+  async listSeasons(): Promise<{ seasons: number[]; activeSeasonId: number }> {
     await this.ensureSeasonRollover();
     const activeSeasonId = await this.getActiveSeasonId();
 
-    const snaps = await this.seasonSnapshotModel
-      .find({}, { seasonId: 1 })
-      .sort({ seasonId: -1 })
-      .lean();
+    const distinct = await this.accountModel.distinct('seasonId');
+    const seasons = [
+      ...new Set<number>(
+        distinct.filter(
+          (s): s is number => typeof s === 'number' && Number.isFinite(s),
+        ),
+      ),
+    ].sort((a, b) => b - a);
 
-    const set = new Set<string>();
-    for (const s of snaps) set.add(s.seasonId);
-    set.add(activeSeasonId);
-
-    const seasons = [...set].sort((a, b) => compareSeasonId(b, a));
+    if (!seasons.includes(activeSeasonId)) seasons.unshift(activeSeasonId);
     return { seasons, activeSeasonId };
   }
 
-  async getAccount(address: string) {
+  async getAccount(address: string, seasonParam?: string) {
     await this.ensureSeasonRollover();
 
     const normalized = normalizeAddress(address);
-    const account = await this.accountModel.findOne({ address: normalized });
+    const activeSeasonId = await this.getActiveSeasonId();
+    const requested =
+      typeof seasonParam === 'string' && seasonParam.trim() !== ''
+        ? Number(seasonParam)
+        : NaN;
+    const seasonId =
+      Number.isFinite(requested) && requested > 0
+        ? Math.floor(requested)
+        : activeSeasonId;
+
+    const account = await this.accountModel.findOne({
+      address: normalized,
+      seasonId,
+    });
     if (!account) {
       return {
         address: normalized,
+        seasonId,
         swapPoints: '0',
         swapUsdVolume: '0',
         swapStreakDay: 0,
@@ -230,6 +227,7 @@ export class PointsService implements OnModuleInit {
     }
     return {
       address: account.address,
+      seasonId: account.seasonId,
       swapPoints: decimalToString(account.swapPoints),
       swapUsdVolume: decimalToString(account.swapUsdVolume),
       swapStreakDay: account.swapStreakDay,
@@ -264,58 +262,95 @@ export class PointsService implements OnModuleInit {
     }));
   }
 
-  async getLeaderboard(limit: number, seasonParam?: string) {
+  async getLeaderboard(
+    limit: number,
+    seasonParam?: string,
+    addressParam?: string,
+  ) {
     await this.ensureSeasonRollover();
 
-    const requested =
-      typeof seasonParam === 'string' && SEASON_ID_REGEX.test(seasonParam.trim())
-        ? seasonParam.trim()
+    const activeSeasonId = await this.getActiveSeasonId();
+    const requestedRaw =
+      typeof seasonParam === 'string' && seasonParam.trim() !== ''
+        ? Number(seasonParam)
+        : NaN;
+    const requestedSeasonId =
+      Number.isFinite(requestedRaw) && requestedRaw > 0
+        ? Math.floor(requestedRaw)
         : undefined;
 
-    const activeSeasonId = await this.getActiveSeasonId();
-    const seasonId = requested ?? activeSeasonId;
+    const seasonId = requestedSeasonId ?? activeSeasonId;
 
-    if (requested && compareSeasonId(requested, activeSeasonId) > 0) {
+    if (requestedSeasonId && requestedSeasonId > activeSeasonId) {
       return {
         seasonId,
         activeSeasonId,
         isHistorical: false,
-        entries: [] as { address: string; swapPoints: string; swapUsdVolume: string }[],
+        entries: [] as LeaderboardRow[],
+        my: null as LeaderboardMy,
       };
     }
 
-    if (!requested || requested === activeSeasonId) {
-      const n = Math.max(1, Math.min(limit || 50, 200));
-      const rows = await this.accountModel
-        .find({})
-        .sort({ swapPoints: -1 })
-        .limit(n);
-
-      return {
-        seasonId: activeSeasonId,
-        activeSeasonId,
-        isHistorical: false,
-        entries: rows.map((r) => ({
-          address: r.address,
-          swapPoints: decimalToString(r.swapPoints),
-          swapUsdVolume: decimalToString(r.swapUsdVolume),
-        })),
-      };
-    }
-
-    const snap = await this.seasonSnapshotModel.findOne({ seasonId }).lean();
     const n = Math.max(1, Math.min(limit || 50, 200));
-    const slice = snap?.entries.slice(0, n) ?? [];
+    const rows = await this.accountModel
+      .find({ seasonId })
+      .sort({ swapPoints: -1, swapUsdVolume: -1, address: 1 })
+      .limit(n);
+
+    const normalizedAddr =
+      typeof addressParam === 'string' && isEvmAddress(addressParam.trim())
+        ? normalizeAddress(addressParam)
+        : null;
+
+    let my: LeaderboardMy = null;
+
+    if (normalizedAddr) {
+      const mine = await this.accountModel
+        .findOne({ address: normalizedAddr, seasonId })
+        .lean();
+
+      if (!mine) {
+        my = { rank: null, row: null };
+      } else {
+        const myPoints = mine.swapPoints;
+        const myVol = mine.swapUsdVolume;
+
+        const ahead = await this.accountModel.countDocuments({
+          seasonId,
+          $or: [
+            { swapPoints: { $gt: myPoints } },
+            { swapPoints: myPoints, swapUsdVolume: { $gt: myVol } },
+            {
+              swapPoints: myPoints,
+              swapUsdVolume: myVol,
+              address: { $lt: mine.address },
+            },
+          ],
+        });
+
+        my = {
+          rank: ahead + 1,
+          row: {
+            address: mine.address,
+            swapPoints: decimalToString(mine.swapPoints),
+            swapUsdVolume: decimalToString(mine.swapUsdVolume),
+          },
+        };
+      }
+    }
 
     return {
       seasonId,
       activeSeasonId,
-      isHistorical: true,
-      entries: slice.map((r) => ({
+      isHistorical: Boolean(
+        requestedSeasonId && requestedSeasonId !== activeSeasonId,
+      ),
+      entries: rows.map((r) => ({
         address: r.address,
-        swapPoints: r.swapPoints,
-        swapUsdVolume: r.swapUsdVolume,
+        swapPoints: decimalToString(r.swapPoints),
+        swapUsdVolume: decimalToString(r.swapUsdVolume),
       })),
+      my,
     };
   }
 
@@ -353,6 +388,7 @@ export class PointsService implements OnModuleInit {
         ? Math.floor(input.swapTimestampSec)
         : Math.floor(Date.now() / 1000);
     const dayIndex = utcDayIndexFromUnixSeconds(unixSeconds);
+    const seasonId = await this.getActiveSeasonId();
 
     const existing = await this.ledgerModel.findOne({
       sourceType: 'swap',
@@ -368,10 +404,15 @@ export class PointsService implements OnModuleInit {
 
     try {
       // Get or create the per-day streak state (same multiplier for all swaps that day).
-      let daily = await this.dailyModel.findOne({ address, dayIndex });
+      let daily = await this.dailyModel.findOne({
+        address,
+        seasonId,
+        dayIndex,
+      });
       if (!daily) {
         const prev = await this.dailyModel.findOne({
           address,
+          seasonId,
           dayIndex: dayIndex - 1,
         });
         const streakDay = prev ? Math.max(1, prev.streakDay + 1) : 1;
@@ -380,15 +421,20 @@ export class PointsService implements OnModuleInit {
         try {
           daily = await this.dailyModel.create({
             address,
+            seasonId,
             dayIndex,
             streakDay,
             multiplier: Types.Decimal128.fromString(multiplierBn.toFixed()),
           });
         } catch (e) {
           // If two requests race, the unique index prevents duplicates.
-          const maybeMongo = e as { code?: number };
+          const maybeMongo = e as unknown as { code?: number };
           if (maybeMongo?.code === 11000) {
-            daily = await this.dailyModel.findOne({ address, dayIndex });
+            daily = await this.dailyModel.findOne({
+              address,
+              seasonId,
+              dayIndex,
+            });
           } else {
             throw e;
           }
@@ -406,8 +452,30 @@ export class PointsService implements OnModuleInit {
       const points = Types.Decimal128.fromString(pointsStr);
       const multiplier = Types.Decimal128.fromString(multiplierStr);
 
-      const created = await this.ledgerModel.create({
+      const account = await this.accountModel.findOneAndUpdate(
+        { address, seasonId },
+        {
+          $setOnInsert: {
+            address,
+            seasonId,
+          },
+          $inc: { swapPoints: points, swapUsdVolume: usdAmount },
+          $set: {
+            swapStreakDay: streakDay,
+            swapMultiplier: multiplier,
+            lastSwapDayIndex: dayIndex,
+          },
+        },
+        { upsert: true, returnDocument: 'after' },
+      );
+      if (!account) {
+        throw new Error('Failed to upsert points account');
+      }
+
+      const created = (await this.ledgerModel.create({
         address,
+        seasonId,
+        pointsAccountId: account._id as unknown as Types.ObjectId,
         sourceType: 'swap',
         sourceId: txHash,
         chainId,
@@ -421,21 +489,7 @@ export class PointsService implements OnModuleInit {
           ...input.metadata,
           swapTimestampSec: unixSeconds,
         },
-      });
-
-      await this.accountModel.updateOne(
-        { address },
-        {
-          $setOnInsert: { address },
-          $inc: { swapPoints: points, swapUsdVolume: usdAmount },
-          $set: {
-            swapStreakDay: streakDay,
-            swapMultiplier: multiplier,
-            lastSwapDayIndex: dayIndex,
-          },
-        },
-        { upsert: true },
-      );
+      })) as PointsLedgerEntryDocument;
 
       return {
         alreadyAwarded: false,
@@ -443,16 +497,19 @@ export class PointsService implements OnModuleInit {
       };
     } catch (e) {
       // If two requests race, the unique index prevents double awards.
-      const maybeMongo = e as { code?: number };
+      const maybeMongo = e as unknown as { code?: number };
       if (maybeMongo?.code === 11000) {
         const entry = await this.ledgerModel.findOne({
           sourceType: 'swap',
           sourceId: txHash,
           chainId,
         });
+        if (!entry) {
+          throw new Error('Duplicate award detected but ledger entry missing');
+        }
         return {
           alreadyAwarded: true,
-          ledgerEntryId: entry?._id.toString(),
+          ledgerEntryId: entry._id.toString(),
         };
       }
       throw e;
