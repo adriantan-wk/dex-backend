@@ -22,14 +22,17 @@ export class PointsController {
   @Get('leaderboard')
   async leaderboard(
     @Query('limit') limit?: string,
+    @Query('page') page?: string,
     @Query('season') season?: string,
     @Query('address') address?: string,
   ) {
     const parsed = limit ? Number(limit) : 50;
+    const parsedPage = page ? Number(page) : 1;
     return this.pointsService.getLeaderboard(
       Number.isFinite(parsed) ? parsed : 50,
       season,
       address,
+      Number.isFinite(parsedPage) ? parsedPage : 1,
     );
   }
 

@@ -266,6 +266,7 @@ export class PointsService implements OnModuleInit {
     limit: number,
     seasonParam?: string,
     addressParam?: string,
+    pageParam?: number,
   ) {
     await this.ensureSeasonRollover();
 
@@ -286,15 +287,26 @@ export class PointsService implements OnModuleInit {
         seasonId,
         activeSeasonId,
         isHistorical: false,
+        page: 1,
+        pageSize: 10,
+        totalPages: 10,
         entries: [] as LeaderboardRow[],
         my: null as LeaderboardMy,
       };
     }
 
-    const n = Math.max(1, Math.min(limit || 50, 200));
+    const pageSize = 10;
+    const totalPages = 10; // hard-cap at 100 entries total
+    const pageRaw = typeof pageParam === 'number' ? pageParam : 1;
+    const page = Math.max(1, Math.min(Math.floor(pageRaw), totalPages));
+
+    // Backwards-compatible: keep accepting limit, but never exceed page size.
+    const n = Math.max(1, Math.min(limit || pageSize, pageSize));
+    const skip = (page - 1) * pageSize;
     const rows = await this.accountModel
       .find({ seasonId })
       .sort({ swapPoints: -1, swapUsdVolume: -1, address: 1 })
+      .skip(skip)
       .limit(n);
 
     const normalizedAddr =
@@ -345,6 +357,9 @@ export class PointsService implements OnModuleInit {
       isHistorical: Boolean(
         requestedSeasonId && requestedSeasonId !== activeSeasonId,
       ),
+      page,
+      pageSize,
+      totalPages,
       entries: rows.map((r) => ({
         address: r.address,
         swapPoints: decimalToString(r.swapPoints),
