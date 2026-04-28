@@ -1,14 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { PointsService } from './points.service';
-
-type AwardSwapBody = {
-  address: string;
-  txHash: string;
-  chainId: number;
-  usdAmount: string;
-  swapTimestampSec?: number;
-  metadata?: Record<string, unknown>;
-};
 
 @Controller('points')
 export class PointsController {
@@ -54,10 +45,5 @@ export class PointsController {
       address,
       Number.isFinite(parsed) ? parsed : 50,
     );
-  }
-
-  @Post('award/swap')
-  async awardFromSwap(@Body() body: AwardSwapBody) {
-    return this.pointsService.awardPointsFromSwap(body);
   }
 }

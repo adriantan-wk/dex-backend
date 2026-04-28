@@ -289,14 +289,18 @@ export class PointsService implements OnModuleInit {
         isHistorical: false,
         page: 1,
         pageSize: 10,
-        totalPages: 10,
+        totalPages: 1,
         entries: [] as LeaderboardRow[],
         my: null as LeaderboardMy,
       };
     }
 
     const pageSize = 10;
-    const totalPages = 10; // hard-cap at 100 entries total
+    const totalEntries = await this.accountModel.countDocuments({ seasonId });
+    const totalPages = Math.max(
+      1,
+      Math.min(10, Math.ceil(totalEntries / pageSize)),
+    );
     const pageRaw = typeof pageParam === 'number' ? pageParam : 1;
     const page = Math.max(1, Math.min(Math.floor(pageRaw), totalPages));
 
@@ -377,17 +381,61 @@ export class PointsService implements OnModuleInit {
     swapTimestampSec?: number;
     metadata?: Record<string, unknown>;
   }) {
+    const txHash = normalizeTxHash(input.txHash);
+    if (!isTxHash(txHash)) {
+      throw new Error('Invalid txHash');
+    }
+    return this.awardSwapInternal({
+      address: input.address,
+      sourceId: txHash,
+      chainId: input.chainId,
+      usdAmount: input.usdAmount,
+      swapTimestampSec: input.swapTimestampSec,
+      metadata: input.metadata,
+    });
+  }
+
+  /**
+   * Cron-indexed award path (source id should be the subgraph Swap.id).
+   * This avoids collapsing multi-swap transactions into a single ledger row.
+   */
+  async awardPointsFromSubgraphSwap(input: {
+    address: string;
+    sourceSwapId: string;
+    chainId: number;
+    usdAmount: string;
+    swapTimestampSec: number;
+    metadata?: Record<string, unknown>;
+  }) {
+    return this.awardSwapInternal({
+      address: input.address,
+      sourceId: input.sourceSwapId,
+      chainId: input.chainId,
+      usdAmount: input.usdAmount,
+      swapTimestampSec: input.swapTimestampSec,
+      metadata: input.metadata,
+    });
+  }
+
+  private async awardSwapInternal(input: {
+    address: string;
+    sourceId: string;
+    chainId: number;
+    usdAmount: string;
+    swapTimestampSec?: number;
+    metadata?: Record<string, unknown>;
+  }) {
     await this.ensureSeasonRollover();
 
     const address = normalizeAddress(input.address);
-    const txHash = normalizeTxHash(input.txHash);
+    const sourceId = normalizeTxHash(input.sourceId);
     const chainId = input.chainId;
 
     if (!isEvmAddress(address)) {
       throw new Error('Invalid address');
     }
-    if (!isTxHash(txHash)) {
-      throw new Error('Invalid txHash');
+    if (!sourceId) {
+      throw new Error('Invalid sourceId');
     }
     if (!Number.isInteger(chainId) || chainId <= 0) {
       throw new Error('Invalid chainId');
@@ -407,13 +455,14 @@ export class PointsService implements OnModuleInit {
 
     const existing = await this.ledgerModel.findOne({
       sourceType: 'swap',
-      sourceId: txHash,
+      sourceId,
       chainId,
     });
     if (existing) {
       return {
         alreadyAwarded: true,
         ledgerEntryId: existing._id.toString(),
+        seasonId,
       };
     }
 
@@ -492,7 +541,7 @@ export class PointsService implements OnModuleInit {
         seasonId,
         pointsAccountId: account._id as unknown as Types.ObjectId,
         sourceType: 'swap',
-        sourceId: txHash,
+        sourceId,
         chainId,
         usdAmount,
         points,
@@ -509,6 +558,13 @@ export class PointsService implements OnModuleInit {
       return {
         alreadyAwarded: false,
         ledgerEntryId: created._id.toString(),
+        seasonId,
+        address,
+        usdAmount: usdAmountStr,
+        points: pointsStr,
+        multiplier: multiplierStr,
+        streakDay,
+        dayIndex,
       };
     } catch (e) {
       // If two requests race, the unique index prevents double awards.
@@ -516,7 +572,7 @@ export class PointsService implements OnModuleInit {
       if (maybeMongo?.code === 11000) {
         const entry = await this.ledgerModel.findOne({
           sourceType: 'swap',
-          sourceId: txHash,
+          sourceId,
           chainId,
         });
         if (!entry) {
@@ -525,6 +581,7 @@ export class PointsService implements OnModuleInit {
         return {
           alreadyAwarded: true,
           ledgerEntryId: entry._id.toString(),
+          seasonId,
         };
       }
       throw e;

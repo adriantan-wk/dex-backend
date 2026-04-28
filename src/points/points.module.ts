@@ -15,6 +15,11 @@ import {
   PointsSeasonState,
   PointsSeasonStateSchema,
 } from './schemas/points-season-state.schema';
+import {
+  PointsIndexerState,
+  PointsIndexerStateSchema,
+} from './schemas/points-indexer-state.schema';
+import { PointsCron } from './points.cron';
 
 @Module({
   imports: [
@@ -23,10 +28,11 @@ import {
       { name: PointsDaily.name, schema: PointsDailySchema },
       { name: PointsLedgerEntry.name, schema: PointsLedgerEntrySchema },
       { name: PointsSeasonState.name, schema: PointsSeasonStateSchema },
+      { name: PointsIndexerState.name, schema: PointsIndexerStateSchema },
     ]),
   ],
   controllers: [PointsController],
-  providers: [PointsService],
+  providers: [PointsService, PointsCron],
   exports: [PointsService],
 })
 export class PointsModule {}
