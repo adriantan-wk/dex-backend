@@ -5,6 +5,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PointsModule } from './points/points.module';
+import { ReferralsModule } from './referrals/referrals.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { PointsModule } from './points/points.module';
       }),
     }),
     PointsModule,
+    ReferralsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
