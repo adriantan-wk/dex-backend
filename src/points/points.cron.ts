@@ -93,23 +93,20 @@ export class PointsCron implements OnModuleInit {
             const usdAmount = String(s.amountUSD ?? '').trim();
             if (!usdAmount) continue;
 
-            const res = await this.points.awardPointsFromSubgraphSwap({
+            const res = await this.points.awardPointsFromSwap({
               address,
               chainId,
-              sourceSwapId: `${source.key}:${s.id}`,
+              sourceSwapId: s.id,
+              poolProtocol: source.key,
               usdAmount,
               swapTimestampSec: Math.floor(ts),
-              metadata: {
-                subgraphSource: source.key,
-                subgraphSwapId: s.id,
-              },
             });
             if (res && typeof res === 'object' && !('alreadyAwarded' in res)) {
               // no-op (type guard)
             }
             if (res?.alreadyAwarded === false) {
               this.logger.log(
-                `Awarded ${res.points} pts (usd=${res.usdAmount}, mult=${res.multiplier}) to ${res.address} season=${res.seasonId} source=${source.key}:${s.id}`,
+                `Awarded ${res.points} pts (usd=${res.usdAmount}, mult=${res.multiplier}) to ${res.address} season=${res.seasonId} poolProtocol=${source.key} swapId=${s.id}`,
               );
             }
 

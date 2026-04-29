@@ -18,6 +18,7 @@ import {
 import {
   PointsLedgerEntry,
   PointsLedgerEntryDocument,
+  PointsPoolProtocol,
 } from './schemas/points-ledger-entry.schema';
 import {
   PointsSeasonState,
@@ -43,8 +44,8 @@ function isEvmAddress(address: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
 }
 
-function isTxHash(txHash: string): boolean {
-  return /^0x[a-fA-F0-9]{64}$/.test(txHash);
+function isPoolProtocol(p: unknown): p is PointsPoolProtocol {
+  return p === 'v2' || p === 'v3';
 }
 
 function toDecimal128String(input: string): string {
@@ -250,6 +251,7 @@ export class PointsService implements OnModuleInit {
       address: e.address,
       sourceType: e.sourceType,
       sourceId: e.sourceId,
+      poolProtocol: e.poolProtocol,
       chainId: e.chainId,
       usdAmount: decimalToString(e.usdAmount),
       points: decimalToString(e.points),
@@ -373,35 +375,14 @@ export class PointsService implements OnModuleInit {
     };
   }
 
+  /**
+   * Award points for a subgraph-indexed swap (`sourceSwapId` = `Swap.id`, not raw tx hash).
+   * Avoids collapsing multiple swaps in one transaction into a single ledger row.
+   */
   async awardPointsFromSwap(input: {
     address: string;
-    txHash: string;
-    chainId: number;
-    usdAmount: string;
-    swapTimestampSec?: number;
-    metadata?: Record<string, unknown>;
-  }) {
-    const txHash = normalizeTxHash(input.txHash);
-    if (!isTxHash(txHash)) {
-      throw new Error('Invalid txHash');
-    }
-    return this.awardSwapInternal({
-      address: input.address,
-      sourceId: txHash,
-      chainId: input.chainId,
-      usdAmount: input.usdAmount,
-      swapTimestampSec: input.swapTimestampSec,
-      metadata: input.metadata,
-    });
-  }
-
-  /**
-   * Cron-indexed award path (source id should be the subgraph Swap.id).
-   * This avoids collapsing multi-swap transactions into a single ledger row.
-   */
-  async awardPointsFromSubgraphSwap(input: {
-    address: string;
     sourceSwapId: string;
+    poolProtocol: PointsPoolProtocol;
     chainId: number;
     usdAmount: string;
     swapTimestampSec: number;
@@ -410,6 +391,7 @@ export class PointsService implements OnModuleInit {
     return this.awardSwapInternal({
       address: input.address,
       sourceId: input.sourceSwapId,
+      poolProtocol: input.poolProtocol,
       chainId: input.chainId,
       usdAmount: input.usdAmount,
       swapTimestampSec: input.swapTimestampSec,
@@ -420,6 +402,7 @@ export class PointsService implements OnModuleInit {
   private async awardSwapInternal(input: {
     address: string;
     sourceId: string;
+    poolProtocol: PointsPoolProtocol;
     chainId: number;
     usdAmount: string;
     swapTimestampSec?: number;
@@ -436,6 +419,9 @@ export class PointsService implements OnModuleInit {
     }
     if (!sourceId) {
       throw new Error('Invalid sourceId');
+    }
+    if (!isPoolProtocol(input.poolProtocol)) {
+      throw new Error('Invalid poolProtocol');
     }
     if (!Number.isInteger(chainId) || chainId <= 0) {
       throw new Error('Invalid chainId');
@@ -542,6 +528,7 @@ export class PointsService implements OnModuleInit {
         pointsAccountId: account._id as unknown as Types.ObjectId,
         sourceType: 'swap',
         sourceId,
+        poolProtocol: input.poolProtocol,
         chainId,
         usdAmount,
         points,

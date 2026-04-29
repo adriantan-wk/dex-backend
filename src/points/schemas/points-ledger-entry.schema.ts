@@ -5,6 +5,9 @@ export type PointsLedgerEntryDocument = HydratedDocument<PointsLedgerEntry>;
 
 export type PointsSourceType = 'swap';
 
+/** Which pool subgraph this swap award was indexed from. */
+export type PointsPoolProtocol = 'v2' | 'v3';
+
 @Schema({
   collection: 'points_ledger',
   timestamps: { createdAt: true, updatedAt: false },
@@ -24,9 +27,14 @@ export class PointsLedgerEntry {
   @Prop({ type: String, required: true })
   sourceType!: PointsSourceType;
 
-  // For swaps, this should be tx hash.
+  /**
+   * Dedupe key: subgraph `Swap.id` (tx hash + delimiter + in-tx index — not raw tx alone).
+   */
   @Prop({ type: String, required: true })
   sourceId!: string;
+
+  @Prop({ type: String, required: true })
+  poolProtocol!: PointsPoolProtocol;
 
   @Prop({ type: Number, required: true })
   chainId!: number;
@@ -75,4 +83,8 @@ PointsLedgerEntrySchema.index(
 PointsLedgerEntrySchema.index(
   { seasonId: 1, address: 1, createdAt: -1 },
   { name: 'by_season_address_recent' },
+);
+PointsLedgerEntrySchema.index(
+  { poolProtocol: 1, chainId: 1 },
+  { name: 'by_pool_protocol_chain' },
 );
