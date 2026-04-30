@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import BigNumber from 'bignumber.js';
+import { floorTo6DecimalString } from '../common/decimal6';
 import {
   utcDayIndexFromUnixSeconds,
   utcMonthIndexFromSeasonKey,
@@ -59,6 +60,10 @@ function toDecimal128String(input: string): string {
 function decimalToString(d: Types.Decimal128): string {
   // Mongoose Decimal128 serializes oddly in JSON; always normalize to string.
   return d.toString();
+}
+
+function decimalToStringFloor6(d: Types.Decimal128): string {
+  return floorTo6DecimalString(decimalToString(d));
 }
 
 function multiplierForStreakDay(streakDay: number): BigNumber {
@@ -229,8 +234,8 @@ export class PointsService implements OnModuleInit {
     return {
       address: account.address,
       seasonId: account.seasonId,
-      swapPoints: decimalToString(account.swapPoints),
-      swapUsdVolume: decimalToString(account.swapUsdVolume),
+      swapPoints: decimalToStringFloor6(account.swapPoints),
+      swapUsdVolume: decimalToStringFloor6(account.swapUsdVolume),
       swapStreakDay: account.swapStreakDay,
       swapMultiplier: decimalToString(account.swapMultiplier),
       lastSwapDayIndex: account.lastSwapDayIndex ?? null,
@@ -253,8 +258,8 @@ export class PointsService implements OnModuleInit {
       sourceId: e.sourceId,
       poolProtocol: e.poolProtocol,
       chainId: e.chainId,
-      usdAmount: decimalToString(e.usdAmount),
-      points: decimalToString(e.points),
+      usdAmount: decimalToStringFloor6(e.usdAmount),
+      points: decimalToStringFloor6(e.points),
       multiplier: decimalToString(e.multiplier),
       pointsFormulaVersion: e.pointsFormulaVersion,
       createdAt: (
@@ -350,8 +355,8 @@ export class PointsService implements OnModuleInit {
           rank: ahead + 1,
           row: {
             address: mine.address,
-            swapPoints: decimalToString(mine.swapPoints),
-            swapUsdVolume: decimalToString(mine.swapUsdVolume),
+            swapPoints: decimalToStringFloor6(mine.swapPoints),
+            swapUsdVolume: decimalToStringFloor6(mine.swapUsdVolume),
           },
         };
       }
@@ -368,8 +373,8 @@ export class PointsService implements OnModuleInit {
       totalPages,
       entries: rows.map((r) => ({
         address: r.address,
-        swapPoints: decimalToString(r.swapPoints),
-        swapUsdVolume: decimalToString(r.swapUsdVolume),
+        swapPoints: decimalToStringFloor6(r.swapPoints),
+        swapUsdVolume: decimalToStringFloor6(r.swapUsdVolume),
       })),
       my,
     };
@@ -427,7 +432,9 @@ export class PointsService implements OnModuleInit {
       throw new Error('Invalid chainId');
     }
 
-    const usdAmountStr = toDecimal128String(input.usdAmount);
+    const usdAmountStr = floorTo6DecimalString(
+      toDecimal128String(input.usdAmount),
+    );
     const usdAmount = Types.Decimal128.fromString(usdAmountStr);
 
     const unixSeconds =
@@ -494,10 +501,9 @@ export class PointsService implements OnModuleInit {
       const streakDay = daily?.streakDay ?? 1;
       const multiplierStr = daily ? decimalToString(daily.multiplier) : '1';
 
-      const pointsStr = new BigNumber(usdAmountStr)
-        .times(new BigNumber(multiplierStr))
-        .decimalPlaces(18, BigNumber.ROUND_FLOOR)
-        .toFixed();
+      const pointsStr = floorTo6DecimalString(
+        new BigNumber(usdAmountStr).times(new BigNumber(multiplierStr)),
+      );
 
       const points = Types.Decimal128.fromString(pointsStr);
       const multiplier = Types.Decimal128.fromString(multiplierStr);
