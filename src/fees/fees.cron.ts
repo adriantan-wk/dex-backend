@@ -6,6 +6,11 @@ import BigNumber from 'bignumber.js';
 import { Model, Types } from 'mongoose';
 import { fetchSubgraphSwapsForFees } from './fees.subgraph';
 import {
+  decimal128FromBigNumberFloor6,
+  floorToMaxDecimals,
+  USD_DECIMALS_MAX,
+} from '../common/decimal6';
+import {
   FeesIndexerState,
   FeesIndexerStateDocument,
 } from './schemas/fees-indexer-state.schema';
@@ -33,22 +38,6 @@ function utcDateKeyFromUnixSeconds(tsSec: number): string {
 
 const V2_FEE_FRACTION = new BigNumber('0.003');
 const ONE_MILLION = new BigNumber('1000000');
-
-function decimal128FromBigNumber(value: BigNumber): Types.Decimal128 {
-  if (!value.isFinite() || value.isNaN()) {
-    return Types.Decimal128.fromString('0');
-  }
-  if (value.isZero()) {
-    return Types.Decimal128.fromString('0');
-  }
-
-  // Mongo Decimal128 supports ~34 significant digits. Clamp to avoid
-  // "inexact rounding" BSONError.
-  const sign = value.isNegative() ? '-' : '';
-  const abs = value.abs();
-  const s = abs.toPrecision(34, BigNumber.ROUND_DOWN);
-  return Types.Decimal128.fromString(`${sign}${s}`);
-}
 
 @Injectable()
 export class FeesCron implements OnModuleInit {
@@ -193,6 +182,9 @@ export class FeesCron implements OnModuleInit {
       }
 
       const addedTotal = addedV2.plus(addedV3);
+      const addedTotal6 = floorToMaxDecimals(addedTotal, USD_DECIMALS_MAX);
+      const addedV26 = floorToMaxDecimals(addedV2, USD_DECIMALS_MAX);
+      const addedV36 = floorToMaxDecimals(addedV3, USD_DECIMALS_MAX);
 
       // Ensure master row exists.
       await this.masterModel.updateOne(
@@ -211,7 +203,7 @@ export class FeesCron implements OnModuleInit {
           { _id: 'master' },
           {
             $inc: {
-              totalFeesUsd: decimal128FromBigNumber(addedTotal),
+              totalFeesUsd: decimal128FromBigNumberFloor6(addedTotal6),
             },
           },
         );
@@ -220,15 +212,28 @@ export class FeesCron implements OnModuleInit {
       const master = await this.masterModel.findOne({ _id: 'master' });
       if (!master) throw new Error('fees master total unavailable');
 
+      // Ensure persisted master total never exceeds 6 decimals going forward.
+      const masterTotal6Bn = floorToMaxDecimals(
+        new BigNumber(master.totalFeesUsd.toString()),
+        USD_DECIMALS_MAX,
+      );
+      const masterTotal6 = Types.Decimal128.fromString(
+        masterTotal6Bn.toFixed(),
+      );
+      await this.masterModel.updateOne(
+        { _id: 'master' },
+        { $set: { totalFeesUsd: masterTotal6 } },
+      );
+
       const snapshot: FeesDailySnapshot = {
         _id: dateKey,
         dayIndex,
-        feesAddedUsd: decimal128FromBigNumber(addedTotal),
-        feesAddedUsdV2: decimal128FromBigNumber(addedV2),
-        feesAddedUsdV3: decimal128FromBigNumber(addedV3),
+        feesAddedUsd: decimal128FromBigNumberFloor6(addedTotal6),
+        feesAddedUsdV2: decimal128FromBigNumberFloor6(addedV26),
+        feesAddedUsdV3: decimal128FromBigNumberFloor6(addedV36),
         swapsProcessedV2: processedV2,
         swapsProcessedV3: processedV3,
-        masterTotalUsdAfter: master.totalFeesUsd,
+        masterTotalUsdAfter: masterTotal6,
         cursors: cursorRanges,
       };
 

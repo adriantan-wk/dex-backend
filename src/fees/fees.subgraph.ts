@@ -69,7 +69,10 @@ export async function fetchSubgraphSwapsForFees(params: {
   };
 
   if (json?.errors?.length) {
-    const msg = json.errors.map((e) => e?.message).filter(Boolean).join('; ');
+    const msg = json.errors
+      .map((e) => e?.message)
+      .filter(Boolean)
+      .join('; ');
     throw new Error(msg || 'Subgraph GraphQL error');
   }
 
@@ -77,8 +80,8 @@ export async function fetchSubgraphSwapsForFees(params: {
     (s): s is SubgraphSwapV2 | SubgraphSwapV3 =>
       Boolean(
         s &&
-          typeof (s as { id?: unknown }).id === 'string' &&
-          typeof (s as { timestamp?: unknown }).timestamp === 'string',
+        typeof (s as { id?: unknown }).id === 'string' &&
+        typeof (s as { timestamp?: unknown }).timestamp === 'string',
       ),
   );
 }

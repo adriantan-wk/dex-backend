@@ -48,4 +48,3 @@ export class FeesDailySnapshot {
 
 export const FeesDailySnapshotSchema =
   SchemaFactory.createForClass(FeesDailySnapshot);
-

@@ -23,4 +23,3 @@ export class PointsIndexerState {
 
 export const PointsIndexerStateSchema =
   SchemaFactory.createForClass(PointsIndexerState);
-

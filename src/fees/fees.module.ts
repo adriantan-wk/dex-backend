@@ -25,4 +25,3 @@ import {
   providers: [FeesCron],
 })
 export class FeesModule {}
-

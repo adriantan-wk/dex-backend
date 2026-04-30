@@ -23,4 +23,3 @@ export class FeesIndexerState {
 
 export const FeesIndexerStateSchema =
   SchemaFactory.createForClass(FeesIndexerState);
-

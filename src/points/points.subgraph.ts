@@ -71,13 +71,14 @@ export async function fetchSubgraphSwaps(params: {
   };
 
   if (json?.errors?.length) {
-    const msg = json.errors.map((e) => e?.message).filter(Boolean).join('; ');
+    const msg = json.errors
+      .map((e) => e?.message)
+      .filter(Boolean)
+      .join('; ');
     throw new Error(msg || 'Subgraph GraphQL error');
   }
 
-  return (json.data?.swaps ?? []).filter(
-    (s): s is SubgraphSwap =>
-      Boolean(s && typeof s.id === 'string' && typeof s.timestamp === 'string'),
+  return (json.data?.swaps ?? []).filter((s): s is SubgraphSwap =>
+    Boolean(s && typeof s.id === 'string' && typeof s.timestamp === 'string'),
   );
 }
-

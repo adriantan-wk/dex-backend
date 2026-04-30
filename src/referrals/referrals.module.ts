@@ -2,8 +2,14 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ReferralsController } from './referrals.controller';
 import { ReferralsService } from './referrals.service';
-import { ReferralClaim, ReferralClaimSchema } from './schemas/referral-claim.schema';
-import { ReferralCode, ReferralCodeSchema } from './schemas/referral-code.schema';
+import {
+  ReferralClaim,
+  ReferralClaimSchema,
+} from './schemas/referral-claim.schema';
+import {
+  ReferralCode,
+  ReferralCodeSchema,
+} from './schemas/referral-code.schema';
 import {
   PointsLedgerEntry,
   PointsLedgerEntrySchema,
@@ -21,4 +27,3 @@ import {
   providers: [ReferralsService],
 })
 export class ReferralsModule {}
-
