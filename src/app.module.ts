@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { FeesModule } from './fees/fees.module';
 import { PointsModule } from './points/points.module';
 import { ReferralsModule } from './referrals/referrals.module';
 
@@ -19,6 +20,7 @@ import { ReferralsModule } from './referrals/referrals.module';
         uri: config.get<string>('MONGODB_URI'),
       }),
     }),
+    FeesModule,
     PointsModule,
     ReferralsModule,
   ],
