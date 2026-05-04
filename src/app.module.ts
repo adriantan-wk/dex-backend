@@ -4,8 +4,10 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AdminModule } from './admin/admin.module';
 import { FeesModule } from './fees/fees.module';
 import { PointsModule } from './points/points.module';
+import { ReferralRebatesModule } from './referrals-rebates/referral-rebates.module';
 import { ReferralsModule } from './referrals/referrals.module';
 
 @Module({
@@ -23,6 +25,8 @@ import { ReferralsModule } from './referrals/referrals.module';
     FeesModule,
     PointsModule,
     ReferralsModule,
+    ReferralRebatesModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],
