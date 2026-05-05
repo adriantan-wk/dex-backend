@@ -182,6 +182,26 @@ export class PointsService implements OnModuleInit {
       }
     }
 
+    // If interval-based seasons were previously enabled, `activeSeasonMonthKey`
+    // will be an ISO timestamp bucket key (e.g. 2026-05-05T00:00:00Z). When
+    // switching back to monthly seasons, migrate the row to the YYYY-MM format
+    // so the monthly rollover path can advance safely.
+    if (!intervalSec) {
+      const monthIdx = utcMonthIndexFromSeasonKey(row.activeSeasonMonthKey);
+      if (monthIdx === null) {
+        const monthlyKey = utcSeasonMonthKeyFromDate(now);
+        await this.seasonStateModel.updateOne(
+          { _id: row._id },
+          {
+            $set: { activeSeasonMonthKey: monthlyKey },
+            $unset: { activeSeasonStartSec: 1, activeSeasonIntervalSec: 1 },
+          },
+        );
+        const patched = await this.seasonStateModel.findOne({ _id: row._id });
+        if (patched) return patched;
+      }
+    }
+
     return row;
   }
 
