@@ -13,14 +13,7 @@ import {
   PointsLedgerEntry,
   PointsLedgerEntryDocument,
 } from '../points/schemas/points-ledger-entry.schema';
-
-function normalizeAddress(address: string): string {
-  return address.trim().toLowerCase();
-}
-
-function isEvmAddress(address: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(address);
-}
+import { isEvmAddress, normalizeAddress } from '../common/evm';
 
 const REFERRAL_CODE_MIN_LEN = 8;
 const REFERRAL_CODE_MAX_LEN = 32;

@@ -1,9 +1,10 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { PointsService } from './points.service';
+import { jobsConfig } from '../config/jobs.config';
 import {
   PointsIndexerState,
   PointsIndexerStateDocument,
@@ -27,7 +28,7 @@ export class PointsCron implements OnModuleInit {
     void this.runSync('startup');
   }
 
-  @Cron(CronExpression.EVERY_HOUR)
+  @Cron(jobsConfig.cron.pointsSync)
   async syncSwapPointsHourly(): Promise<void> {
     await this.runSync('hourly');
   }

@@ -2,7 +2,6 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import BigNumber from 'bignumber.js';
 import { Model, Types } from 'mongoose';
-import { isAddress } from 'viem';
 import {
   ReferralFeeAccrual,
   ReferralFeeAccrualDocument,
@@ -17,14 +16,7 @@ import {
 } from '../referrals/schemas/referral-claim.schema';
 import { getTier, TIER_TABLE } from './tier';
 import { buildEpochState, isEpochClosed } from './epoch';
-
-function normalizeAddress(address: string): string {
-  return address.trim().toLowerCase();
-}
-
-function isEvmAddress(address: string): boolean {
-  return isAddress(address, { strict: false });
-}
+import { isEvmAddress, normalizeAddress } from '../common/evm';
 
 function decimal128ToString(v: Types.Decimal128 | string | undefined): string {
   if (!v) return '0';

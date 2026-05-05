@@ -3,6 +3,13 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import BigNumber from 'bignumber.js';
 import { floorTo6DecimalString } from '../common/decimal6';
+import { jobsConfig } from '../config/jobs.config';
+import { parseIntervalToSecondsOrNull } from '../common/intervals';
+import {
+  bucketStartFromUnixSeconds,
+  isoUtcNoMillisFromUnixSeconds,
+} from '../common/time-buckets';
+import { isEvmAddress, normalizeAddress, normalizeTxHash } from '../common/evm';
 import {
   utcDayIndexFromUnixSeconds,
   utcMonthIndexFromSeasonKey,
@@ -32,18 +39,6 @@ type LeaderboardRow = {
   swapUsdVolume: string;
 };
 type LeaderboardMy = null | { rank: number | null; row: LeaderboardRow | null };
-
-function normalizeAddress(address: string): string {
-  return address.trim().toLowerCase();
-}
-
-function normalizeTxHash(txHash: string): string {
-  return txHash.trim().toLowerCase();
-}
-
-function isEvmAddress(address: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(address);
-}
 
 function isPoolProtocol(p: unknown): p is PointsPoolProtocol {
   return p === 'v2' || p === 'v3';
@@ -112,13 +107,33 @@ export class PointsService implements OnModuleInit {
   }
 
   private async getOrInitSeasonStateRow(): Promise<PointsSeasonStateDocument> {
-    const targetMonthKey = utcSeasonMonthKeyFromDate(new Date());
+    const now = new Date();
+    const intervalSec = parseIntervalToSecondsOrNull(
+      jobsConfig.pointsSeasonInterval ?? undefined,
+      { minSec: 86400, maxSec: 52 * 7 * 86400 },
+    );
+
+    const targetKey = intervalSec
+      ? isoUtcNoMillisFromUnixSeconds(
+          bucketStartFromUnixSeconds(Math.floor(now.getTime() / 1000), intervalSec),
+        )
+      : utcSeasonMonthKeyFromDate(now);
+
     await this.seasonStateModel.updateOne(
       {},
       {
         $setOnInsert: {
           activeSeasonId: 1,
-          activeSeasonMonthKey: targetMonthKey,
+          activeSeasonMonthKey: targetKey,
+          ...(intervalSec
+            ? {
+                activeSeasonStartSec: bucketStartFromUnixSeconds(
+                  Math.floor(now.getTime() / 1000),
+                  intervalSec,
+                ),
+                activeSeasonIntervalSec: intervalSec,
+              }
+            : {}),
         },
       },
       { upsert: true },
@@ -135,6 +150,38 @@ export class PointsService implements OnModuleInit {
     ) {
       throw new Error('points season state invalid');
     }
+
+    // If interval-based seasons are enabled, ensure the row has the extra fields,
+    // but do NOT change the activeSeasonId (preserve continuity).
+    if (intervalSec) {
+      const startSec =
+        typeof row.activeSeasonStartSec === 'number' &&
+        Number.isFinite(row.activeSeasonStartSec) &&
+        row.activeSeasonStartSec > 0
+          ? Math.floor(row.activeSeasonStartSec)
+          : bucketStartFromUnixSeconds(Math.floor(now.getTime() / 1000), intervalSec);
+
+      const needsPatch =
+        row.activeSeasonStartSec !== startSec ||
+        row.activeSeasonIntervalSec !== intervalSec ||
+        row.activeSeasonMonthKey !== targetKey;
+
+      if (needsPatch) {
+        await this.seasonStateModel.updateOne(
+          { _id: row._id },
+          {
+            $set: {
+              activeSeasonStartSec: startSec,
+              activeSeasonIntervalSec: intervalSec,
+              activeSeasonMonthKey: targetKey,
+            },
+          },
+        );
+        const patched = await this.seasonStateModel.findOne({ _id: row._id });
+        if (patched) return patched;
+      }
+    }
+
     return row;
   }
 
@@ -143,7 +190,60 @@ export class PointsService implements OnModuleInit {
    * multiple months if the process was idle).
    */
   async ensureSeasonRollover(): Promise<void> {
-    const targetMonthKey = utcSeasonMonthKeyFromDate(new Date());
+    const now = new Date();
+    const intervalSec = parseIntervalToSecondsOrNull(
+      jobsConfig.pointsSeasonInterval ?? undefined,
+      { minSec: 86400, maxSec: 52 * 7 * 86400 },
+    );
+
+    if (intervalSec) {
+      const nowSec = Math.floor(now.getTime() / 1000);
+      const targetStartSec = bucketStartFromUnixSeconds(nowSec, intervalSec);
+      const targetKey = isoUtcNoMillisFromUnixSeconds(targetStartSec);
+
+      const maxRetries = 5;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const row = await this.getOrInitSeasonStateRow();
+
+        const currentStartSec =
+          typeof row.activeSeasonStartSec === 'number' &&
+          Number.isFinite(row.activeSeasonStartSec) &&
+          row.activeSeasonStartSec > 0
+            ? Math.floor(row.activeSeasonStartSec)
+            : targetStartSec;
+        const currentIntervalSec =
+          typeof row.activeSeasonIntervalSec === 'number' &&
+          Number.isFinite(row.activeSeasonIntervalSec) &&
+          row.activeSeasonIntervalSec > 0
+            ? Math.floor(row.activeSeasonIntervalSec)
+            : intervalSec;
+
+        const delta = Math.floor((targetStartSec - currentStartSec) / currentIntervalSec);
+        if (delta <= 0) return;
+
+        const advanced = await this.seasonStateModel.findOneAndUpdate(
+          {
+            activeSeasonId: row.activeSeasonId,
+            activeSeasonStartSec: currentStartSec,
+            activeSeasonIntervalSec: currentIntervalSec,
+          },
+          {
+            $set: {
+              activeSeasonStartSec: targetStartSec,
+              activeSeasonIntervalSec: intervalSec,
+              activeSeasonMonthKey: targetKey,
+            },
+            $inc: { activeSeasonId: delta },
+          },
+          { returnDocument: 'after' },
+        );
+
+        if (advanced) return;
+      }
+      return;
+    }
+
+    const targetMonthKey = utcSeasonMonthKeyFromDate(now);
     const targetIdx = utcMonthIndexFromSeasonKey(targetMonthKey);
     if (targetIdx === null) return;
 

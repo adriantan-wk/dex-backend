@@ -1,10 +1,16 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import BigNumber from 'bignumber.js';
 import { Model, Types } from 'mongoose';
 import { fetchSubgraphSwapsForFees } from './fees.subgraph';
+import { jobsConfig } from '../config/jobs.config';
+import { parseIntervalToSecondsOrDefault } from '../common/intervals';
+import {
+  bucketStartFromUnixSeconds,
+  isoUtcNoMillisFromUnixSeconds,
+} from '../common/time-buckets';
 import {
   decimal128FromBigNumberFloor6,
   floorToMaxDecimals,
@@ -24,43 +30,11 @@ import {
 } from './schemas/fees-snapshot.schema';
 
 function parseSnapshotIntervalToSeconds(inputRaw: string | undefined): number {
-  const input = String(inputRaw ?? '').trim();
-  if (!input) return 86400;
-
-  // Supports: "1h", "6h", "1d", "2w", "30m", "900s"
-  const m = input.match(/^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)$/i);
-  if (!m) return 86400;
-
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n <= 0) return 86400;
-
-  const unit = m[2].toLowerCase();
-  const secPer =
-    unit.startsWith('s')
-      ? 1
-      : unit.startsWith('m')
-        ? 60
-        : unit.startsWith('h')
-          ? 3600
-          : unit.startsWith('d')
-            ? 86400
-            : 604800; // w*
-
-  // Keep within sane bounds (>= 1 minute, <= 8 weeks)
-  const sec = Math.floor(n * secPer);
-  return Math.min(Math.max(sec, 60), 8 * 7 * 86400);
-}
-
-function isoUtcNoMillisFromUnixSeconds(tsSec: number): string {
-  return new Date(Math.max(0, Math.floor(tsSec)) * 1000)
-    .toISOString()
-    .replace('.000Z', 'Z');
-}
-
-function bucketStartFromUnixSeconds(tsSec: number, intervalSec: number): number {
-  const t = Math.max(0, Math.floor(tsSec));
-  const i = Math.max(60, Math.floor(intervalSec));
-  return Math.floor(t / i) * i;
+  return parseIntervalToSecondsOrDefault(inputRaw, {
+    minSec: 60,
+    maxSec: 8 * 7 * 86400,
+    defaultSec: 86400,
+  });
 }
 
 const V2_FEE_FRACTION = new BigNumber('0.003');
@@ -87,7 +61,7 @@ export class FeesCron implements OnModuleInit {
   }
 
   // Poll frequently; only emit a snapshot when the configured bucket changes.
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(jobsConfig.cron.feesSnapshotPoll)
   async tabulateFeesSnapshotPoll(): Promise<void> {
     await this.runSync('poll');
   }
@@ -118,7 +92,7 @@ export class FeesCron implements OnModuleInit {
 
       const nowSec = Math.floor(Date.now() / 1000);
       const intervalSec = parseSnapshotIntervalToSeconds(
-        this.config.get<string>('FEES_SNAPSHOT_INTERVAL'),
+        jobsConfig.feesSnapshotInterval,
       );
       const bucketStartSec = bucketStartFromUnixSeconds(nowSec, intervalSec);
       const bucketEndSec = bucketStartSec + intervalSec;

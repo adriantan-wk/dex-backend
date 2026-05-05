@@ -1,11 +1,12 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { InjectModel } from '@nestjs/mongoose';
 import BigNumber from 'bignumber.js';
 import { Model } from 'mongoose';
 import { fetchRebateSwaps, type RebateSwap } from './referral-rebates.subgraph';
 import { decimal128FromBigNumberFloor6 } from '../common/decimal6';
+import { jobsConfig } from '../config/jobs.config';
 import {
   ReferralIndexerState,
   ReferralIndexerStateDocument,
@@ -51,7 +52,7 @@ export class ReferralRebatesCron implements OnModuleInit {
     void this.runSync('startup');
   }
 
-  @Cron(CronExpression.EVERY_HOUR)
+  @Cron(jobsConfig.cron.referralRebatesSync)
   async hourly(): Promise<void> {
     await this.runSync('hourly');
   }
