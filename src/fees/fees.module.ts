@@ -10,16 +10,16 @@ import {
   FeesMasterTotalSchema,
 } from './schemas/fees-master-total.schema';
 import {
-  FeesDailySnapshot,
-  FeesDailySnapshotSchema,
-} from './schemas/fees-daily-snapshot.schema';
+  FeesSnapshot,
+  FeesSnapshotSchema,
+} from './schemas/fees-snapshot.schema';
 
 @Module({
   imports: [
     MongooseModule.forFeature([
       { name: FeesIndexerState.name, schema: FeesIndexerStateSchema },
       { name: FeesMasterTotal.name, schema: FeesMasterTotalSchema },
-      { name: FeesDailySnapshot.name, schema: FeesDailySnapshotSchema },
+      { name: FeesSnapshot.name, schema: FeesSnapshotSchema },
     ]),
   ],
   providers: [FeesCron],

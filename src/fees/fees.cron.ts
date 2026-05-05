@@ -19,21 +19,48 @@ import {
   FeesMasterTotalDocument,
 } from './schemas/fees-master-total.schema';
 import {
-  FeesDailySnapshot,
-  FeesDailySnapshotDocument,
-} from './schemas/fees-daily-snapshot.schema';
+  FeesSnapshot,
+  FeesSnapshotDocument,
+} from './schemas/fees-snapshot.schema';
 
-function utcDayIndexFromUnixSeconds(tsSec: number): number {
-  return Math.floor(Math.max(0, Math.floor(tsSec)) / 86400);
+function parseSnapshotIntervalToSeconds(inputRaw: string | undefined): number {
+  const input = String(inputRaw ?? '').trim();
+  if (!input) return 86400;
+
+  // Supports: "1h", "6h", "1d", "2w", "30m", "900s"
+  const m = input.match(/^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|wks|week|weeks)$/i);
+  if (!m) return 86400;
+
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return 86400;
+
+  const unit = m[2].toLowerCase();
+  const secPer =
+    unit.startsWith('s')
+      ? 1
+      : unit.startsWith('m')
+        ? 60
+        : unit.startsWith('h')
+          ? 3600
+          : unit.startsWith('d')
+            ? 86400
+            : 604800; // w*
+
+  // Keep within sane bounds (>= 1 minute, <= 8 weeks)
+  const sec = Math.floor(n * secPer);
+  return Math.min(Math.max(sec, 60), 8 * 7 * 86400);
 }
 
-function utcDateKeyFromUnixSeconds(tsSec: number): string {
-  const ms = Math.max(0, Math.floor(tsSec)) * 1000;
-  const d = new Date(ms);
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+function isoUtcNoMillisFromUnixSeconds(tsSec: number): string {
+  return new Date(Math.max(0, Math.floor(tsSec)) * 1000)
+    .toISOString()
+    .replace('.000Z', 'Z');
+}
+
+function bucketStartFromUnixSeconds(tsSec: number, intervalSec: number): number {
+  const t = Math.max(0, Math.floor(tsSec));
+  const i = Math.max(60, Math.floor(intervalSec));
+  return Math.floor(t / i) * i;
 }
 
 const V2_FEE_FRACTION = new BigNumber('0.003');
@@ -50,8 +77,8 @@ export class FeesCron implements OnModuleInit {
     private readonly indexerModel: Model<FeesIndexerStateDocument>,
     @InjectModel(FeesMasterTotal.name)
     private readonly masterModel: Model<FeesMasterTotalDocument>,
-    @InjectModel(FeesDailySnapshot.name)
-    private readonly dailyModel: Model<FeesDailySnapshotDocument>,
+    @InjectModel(FeesSnapshot.name)
+    private readonly snapshotModel: Model<FeesSnapshotDocument>,
   ) {}
 
   onModuleInit() {
@@ -59,12 +86,13 @@ export class FeesCron implements OnModuleInit {
     void this.runSync('startup');
   }
 
-  @Cron(CronExpression.EVERY_DAY_AT_1AM)
-  async tabulateFeesDaily(): Promise<void> {
-    await this.runSync('daily');
+  // Poll frequently; only emit a snapshot when the configured bucket changes.
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async tabulateFeesSnapshotPoll(): Promise<void> {
+    await this.runSync('poll');
   }
 
-  private async runSync(trigger: 'startup' | 'daily'): Promise<void> {
+  private async runSync(trigger: 'startup' | 'poll'): Promise<void> {
     if (this.running) return;
     this.running = true;
 
@@ -89,10 +117,26 @@ export class FeesCron implements OnModuleInit {
       const maxPages = 200; // safe cap
 
       const nowSec = Math.floor(Date.now() / 1000);
-      const dayIndex = utcDayIndexFromUnixSeconds(nowSec);
-      const dateKey = utcDateKeyFromUnixSeconds(nowSec);
+      const intervalSec = parseSnapshotIntervalToSeconds(
+        this.config.get<string>('FEES_SNAPSHOT_INTERVAL'),
+      );
+      const bucketStartSec = bucketStartFromUnixSeconds(nowSec, intervalSec);
+      const bucketEndSec = bucketStartSec + intervalSec;
+      const snapshotKey = isoUtcNoMillisFromUnixSeconds(bucketStartSec);
 
-      const cursorRanges: FeesDailySnapshot['cursors'] = {
+      // Don't re-run within the same bucket (unless it's startup and the row
+      // doesn't exist yet).
+      if (trigger !== 'startup') {
+        const existing = await this.snapshotModel.findOne({ _id: snapshotKey });
+        if (existing) {
+          this.logger.debug(
+            `Fees snapshot already exists for bucket=${snapshotKey} intervalSec=${intervalSec}; skipping`,
+          );
+          return;
+        }
+      }
+
+      const cursorRanges: FeesSnapshot['cursors'] = {
         v2: { fromTs: 0, fromId: '', toTs: 0, toId: '' },
         v3: { fromTs: 0, fromId: '', toTs: 0, toId: '' },
       };
@@ -225,9 +269,11 @@ export class FeesCron implements OnModuleInit {
         { $set: { totalFeesUsd: masterTotal6 } },
       );
 
-      const snapshot: FeesDailySnapshot = {
-        _id: dateKey,
-        dayIndex,
+      const snapshot: FeesSnapshot = {
+        _id: snapshotKey,
+        bucketStartSec,
+        bucketEndSec,
+        intervalSec,
         feesAddedUsd: decimal128FromBigNumberFloor6(addedTotal6),
         feesAddedUsdV2: decimal128FromBigNumberFloor6(addedV26),
         feesAddedUsdV3: decimal128FromBigNumberFloor6(addedV36),
@@ -237,14 +283,14 @@ export class FeesCron implements OnModuleInit {
         cursors: cursorRanges,
       };
 
-      await this.dailyModel.updateOne(
-        { _id: dateKey },
+      await this.snapshotModel.updateOne(
+        { _id: snapshotKey },
         { $set: snapshot },
         { upsert: true },
       );
 
       this.logger.log(
-        `Fees tabulation done (${trigger}) date=${dateKey} addedUsd=${addedTotal.toFixed()} v2Usd=${addedV2.toFixed()} v3Usd=${addedV3.toFixed()} swapsV2=${processedV2} swapsV3=${processedV3}`,
+        `Fees snapshot done (${trigger}) bucket=${snapshotKey} intervalSec=${intervalSec} addedUsd=${addedTotal.toFixed()} v2Usd=${addedV2.toFixed()} v3Usd=${addedV3.toFixed()} swapsV2=${processedV2} swapsV3=${processedV3}`,
       );
     } catch (e) {
       this.logger.error(`Fees tabulation failed: ${String(e)}`);

@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import BigNumber from 'bignumber.js';
 import { Model, Types } from 'mongoose';
+import { isAddress } from 'viem';
 import {
   ReferralFeeAccrual,
   ReferralFeeAccrualDocument,
@@ -22,7 +23,7 @@ function normalizeAddress(address: string): string {
 }
 
 function isEvmAddress(address: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(address);
+  return isAddress(address, { strict: false });
 }
 
 function decimal128ToString(v: Types.Decimal128 | string | undefined): string {

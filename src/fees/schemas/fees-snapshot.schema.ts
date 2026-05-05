@@ -1,20 +1,31 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
-export type FeesDailySnapshotDocument = HydratedDocument<FeesDailySnapshot>;
+export type FeesSnapshotDocument = HydratedDocument<FeesSnapshot>;
 
 @Schema({
-  collection: 'fees_daily_snapshots',
+  collection: 'fees_snapshots',
   timestamps: { createdAt: true, updatedAt: false },
 })
-export class FeesDailySnapshot {
-  /** UTC date key like "2026-04-30". */
+export class FeesSnapshot {
+  /**
+   * Snapshot key for a time bucket (ISO UTC bucket start).
+   * Example: "2026-05-05T09:00:00Z"
+   */
   @Prop({ type: String, required: true })
   _id!: string;
 
-  /** UTC day index (unix seconds / 86400). */
+  /** Bucket start timestamp (unix seconds, UTC). */
   @Prop({ type: Number, required: true, index: true })
-  dayIndex!: number;
+  bucketStartSec!: number;
+
+  /** Bucket end timestamp (unix seconds, UTC, exclusive). */
+  @Prop({ type: Number, required: true, index: true })
+  bucketEndSec!: number;
+
+  /** Bucket size in seconds (e.g. 3600, 86400, 604800). */
+  @Prop({ type: Number, required: true, index: true })
+  intervalSec!: number;
 
   /** Total fees added during this run (USD). */
   @Prop({ type: Types.Decimal128, required: true })
@@ -46,5 +57,4 @@ export class FeesDailySnapshot {
   };
 }
 
-export const FeesDailySnapshotSchema =
-  SchemaFactory.createForClass(FeesDailySnapshot);
+export const FeesSnapshotSchema = SchemaFactory.createForClass(FeesSnapshot);
