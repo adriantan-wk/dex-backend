@@ -5,6 +5,17 @@ import { ReferralsService } from './referrals.service';
 export class ReferralsController {
   constructor(private readonly referralsService: ReferralsService) {}
 
+  @Get('validate')
+  async validateReferralCode(
+    @Query('referralCode') referralCode: string,
+    @Query('referredAddress') referredAddress?: string,
+  ) {
+    return this.referralsService.validateReferralCode({
+      referralCode: referralCode ?? '',
+      referredAddress,
+    });
+  }
+
   @Get('code')
   async getReferralCode(@Query('inviterAddress') inviterAddress: string) {
     return this.referralsService.getReferralCodeForInviter(inviterAddress);

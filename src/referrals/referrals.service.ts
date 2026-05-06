@@ -38,6 +38,16 @@ function assertValidNewReferralCode(code: string): void {
   }
 }
 
+function isWellFormedReferralCode(code: string): boolean {
+  if (
+    code.length < REFERRAL_CODE_MIN_LEN ||
+    code.length > REFERRAL_CODE_MAX_LEN
+  ) {
+    return false;
+  }
+  return /^[a-z0-9]+$/.test(code);
+}
+
 @Injectable()
 export class ReferralsService {
   constructor(
@@ -48,6 +58,55 @@ export class ReferralsService {
     @InjectModel(PointsLedgerEntry.name)
     private readonly ledgerModel: Model<PointsLedgerEntryDocument>,
   ) {}
+
+  /**
+   * Checks that a code exists in `referral_codes`. When `referredAddress` is set,
+   * applies the same inviter / eligibility checks as `claimReferral` (self-referral,
+   * ledger activity) so the UI can reflect whether claim will succeed for this wallet.
+   */
+  async validateReferralCode(input: {
+    referralCode: string;
+    referredAddress?: string;
+  }): Promise<
+    | { valid: true }
+    | {
+        valid: false;
+        reason:
+          | 'invalid_format'
+          | 'not_found'
+          | 'self_referral'
+          | 'existing_trader';
+      }
+  > {
+    const referralCode = normalizeReferralCode(input.referralCode);
+    if (!isWellFormedReferralCode(referralCode)) {
+      return { valid: false, reason: 'invalid_format' };
+    }
+
+    const codeRow = await this.codeModel.findOne({ referralCode }).lean();
+    if (!codeRow) {
+      return { valid: false, reason: 'not_found' };
+    }
+
+    const referredRaw = input.referredAddress?.trim();
+    if (referredRaw) {
+      const referredAddress = normalizeAddress(referredRaw);
+      if (!isEvmAddress(referredAddress)) {
+        return { valid: true };
+      }
+      if (codeRow.inviterAddress === referredAddress) {
+        return { valid: false, reason: 'self_referral' };
+      }
+      const hasAnyTx = await this.ledgerModel.exists({
+        address: referredAddress,
+      });
+      if (hasAnyTx) {
+        return { valid: false, reason: 'existing_trader' };
+      }
+    }
+
+    return { valid: true };
+  }
 
   async getReferralCodeForInviter(inviterAddressRaw: string | undefined) {
     if (!inviterAddressRaw || typeof inviterAddressRaw !== 'string') {
