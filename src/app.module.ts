@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { AdminModule } from './admin/admin.module';
 import { FeesModule } from './fees/fees.module';
 import { PointsModule } from './points/points.module';
+import { AuthWalletModule } from './auth-wallet/auth-wallet.module';
 import { ReferralRebatesModule } from './referrals-rebates/referral-rebates.module';
 import { ReferralsModule } from './referrals/referrals.module';
 
@@ -26,6 +27,7 @@ import { ReferralsModule } from './referrals/referrals.module';
     PointsModule,
     ReferralsModule,
     ReferralRebatesModule,
+    AuthWalletModule,
     AdminModule,
   ],
   controllers: [AppController],
