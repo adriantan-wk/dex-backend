@@ -14,9 +14,11 @@ import {
   PointsLedgerEntry,
   PointsLedgerEntrySchema,
 } from '../points/schemas/points-ledger-entry.schema';
+import { AuthWalletModule } from '../auth-wallet/auth-wallet.module';
 
 @Module({
   imports: [
+    AuthWalletModule,
     MongooseModule.forFeature([
       { name: ReferralClaim.name, schema: ReferralClaimSchema },
       { name: ReferralCode.name, schema: ReferralCodeSchema },
