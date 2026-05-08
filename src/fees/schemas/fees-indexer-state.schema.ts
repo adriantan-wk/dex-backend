@@ -1,11 +1,11 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument } from 'mongoose';
 
-export type PointsIndexerStateDocument = HydratedDocument<PointsIndexerState>;
+export type FeesIndexerStateDocument = HydratedDocument<FeesIndexerState>;
 
-/** Cursor for subgraph -> points awards (one row per source). */
-@Schema({ collection: 'points_indexer_state', timestamps: true })
-export class PointsIndexerState {
+/** Cursor for subgraph -> site fee aggregation (one row per source). */
+@Schema({ collection: 'fees_indexer_state', timestamps: true })
+export class FeesIndexerState {
   @Prop({ type: String, required: true })
   _id!: string;
 
@@ -21,5 +21,5 @@ export class PointsIndexerState {
   lastProcessedSwapId!: string;
 }
 
-export const PointsIndexerStateSchema =
-  SchemaFactory.createForClass(PointsIndexerState);
+export const FeesIndexerStateSchema =
+  SchemaFactory.createForClass(FeesIndexerState);

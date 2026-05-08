@@ -2,6 +2,14 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import BigNumber from 'bignumber.js';
+import { floorTo6DecimalString } from '../common/decimal6';
+import { jobsConfig } from '../config/jobs.config';
+import { parseIntervalToSecondsOrNull } from '../common/intervals';
+import {
+  bucketStartFromUnixSeconds,
+  isoUtcNoMillisFromUnixSeconds,
+} from '../common/time-buckets';
+import { isEvmAddress, normalizeAddress, normalizeTxHash } from '../common/evm';
 import {
   utcDayIndexFromUnixSeconds,
   utcMonthIndexFromSeasonKey,
@@ -32,18 +40,6 @@ type LeaderboardRow = {
 };
 type LeaderboardMy = null | { rank: number | null; row: LeaderboardRow | null };
 
-function normalizeAddress(address: string): string {
-  return address.trim().toLowerCase();
-}
-
-function normalizeTxHash(txHash: string): string {
-  return txHash.trim().toLowerCase();
-}
-
-function isEvmAddress(address: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(address);
-}
-
 function isPoolProtocol(p: unknown): p is PointsPoolProtocol {
   return p === 'v2' || p === 'v3';
 }
@@ -59,6 +55,10 @@ function toDecimal128String(input: string): string {
 function decimalToString(d: Types.Decimal128): string {
   // Mongoose Decimal128 serializes oddly in JSON; always normalize to string.
   return d.toString();
+}
+
+function decimalToStringFloor6(d: Types.Decimal128): string {
+  return floorTo6DecimalString(decimalToString(d));
 }
 
 function multiplierForStreakDay(streakDay: number): BigNumber {
@@ -107,13 +107,33 @@ export class PointsService implements OnModuleInit {
   }
 
   private async getOrInitSeasonStateRow(): Promise<PointsSeasonStateDocument> {
-    const targetMonthKey = utcSeasonMonthKeyFromDate(new Date());
+    const now = new Date();
+    const intervalSec = parseIntervalToSecondsOrNull(
+      jobsConfig.pointsSeasonInterval ?? undefined,
+      { minSec: 86400, maxSec: 52 * 7 * 86400 },
+    );
+
+    const targetKey = intervalSec
+      ? isoUtcNoMillisFromUnixSeconds(
+          bucketStartFromUnixSeconds(Math.floor(now.getTime() / 1000), intervalSec),
+        )
+      : utcSeasonMonthKeyFromDate(now);
+
     await this.seasonStateModel.updateOne(
       {},
       {
         $setOnInsert: {
           activeSeasonId: 1,
-          activeSeasonMonthKey: targetMonthKey,
+          activeSeasonMonthKey: targetKey,
+          ...(intervalSec
+            ? {
+                activeSeasonStartSec: bucketStartFromUnixSeconds(
+                  Math.floor(now.getTime() / 1000),
+                  intervalSec,
+                ),
+                activeSeasonIntervalSec: intervalSec,
+              }
+            : {}),
         },
       },
       { upsert: true },
@@ -130,6 +150,58 @@ export class PointsService implements OnModuleInit {
     ) {
       throw new Error('points season state invalid');
     }
+
+    // If interval-based seasons are enabled, ensure the row has the extra fields,
+    // but do NOT change the activeSeasonId (preserve continuity).
+    if (intervalSec) {
+      const startSec =
+        typeof row.activeSeasonStartSec === 'number' &&
+        Number.isFinite(row.activeSeasonStartSec) &&
+        row.activeSeasonStartSec > 0
+          ? Math.floor(row.activeSeasonStartSec)
+          : bucketStartFromUnixSeconds(Math.floor(now.getTime() / 1000), intervalSec);
+
+      const needsPatch =
+        row.activeSeasonStartSec !== startSec ||
+        row.activeSeasonIntervalSec !== intervalSec ||
+        row.activeSeasonMonthKey !== targetKey;
+
+      if (needsPatch) {
+        await this.seasonStateModel.updateOne(
+          { _id: row._id },
+          {
+            $set: {
+              activeSeasonStartSec: startSec,
+              activeSeasonIntervalSec: intervalSec,
+              activeSeasonMonthKey: targetKey,
+            },
+          },
+        );
+        const patched = await this.seasonStateModel.findOne({ _id: row._id });
+        if (patched) return patched;
+      }
+    }
+
+    // If interval-based seasons were previously enabled, `activeSeasonMonthKey`
+    // will be an ISO timestamp bucket key (e.g. 2026-05-05T00:00:00Z). When
+    // switching back to monthly seasons, migrate the row to the YYYY-MM format
+    // so the monthly rollover path can advance safely.
+    if (!intervalSec) {
+      const monthIdx = utcMonthIndexFromSeasonKey(row.activeSeasonMonthKey);
+      if (monthIdx === null) {
+        const monthlyKey = utcSeasonMonthKeyFromDate(now);
+        await this.seasonStateModel.updateOne(
+          { _id: row._id },
+          {
+            $set: { activeSeasonMonthKey: monthlyKey },
+            $unset: { activeSeasonStartSec: 1, activeSeasonIntervalSec: 1 },
+          },
+        );
+        const patched = await this.seasonStateModel.findOne({ _id: row._id });
+        if (patched) return patched;
+      }
+    }
+
     return row;
   }
 
@@ -138,7 +210,60 @@ export class PointsService implements OnModuleInit {
    * multiple months if the process was idle).
    */
   async ensureSeasonRollover(): Promise<void> {
-    const targetMonthKey = utcSeasonMonthKeyFromDate(new Date());
+    const now = new Date();
+    const intervalSec = parseIntervalToSecondsOrNull(
+      jobsConfig.pointsSeasonInterval ?? undefined,
+      { minSec: 86400, maxSec: 52 * 7 * 86400 },
+    );
+
+    if (intervalSec) {
+      const nowSec = Math.floor(now.getTime() / 1000);
+      const targetStartSec = bucketStartFromUnixSeconds(nowSec, intervalSec);
+      const targetKey = isoUtcNoMillisFromUnixSeconds(targetStartSec);
+
+      const maxRetries = 5;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const row = await this.getOrInitSeasonStateRow();
+
+        const currentStartSec =
+          typeof row.activeSeasonStartSec === 'number' &&
+          Number.isFinite(row.activeSeasonStartSec) &&
+          row.activeSeasonStartSec > 0
+            ? Math.floor(row.activeSeasonStartSec)
+            : targetStartSec;
+        const currentIntervalSec =
+          typeof row.activeSeasonIntervalSec === 'number' &&
+          Number.isFinite(row.activeSeasonIntervalSec) &&
+          row.activeSeasonIntervalSec > 0
+            ? Math.floor(row.activeSeasonIntervalSec)
+            : intervalSec;
+
+        const delta = Math.floor((targetStartSec - currentStartSec) / currentIntervalSec);
+        if (delta <= 0) return;
+
+        const advanced = await this.seasonStateModel.findOneAndUpdate(
+          {
+            activeSeasonId: row.activeSeasonId,
+            activeSeasonStartSec: currentStartSec,
+            activeSeasonIntervalSec: currentIntervalSec,
+          },
+          {
+            $set: {
+              activeSeasonStartSec: targetStartSec,
+              activeSeasonIntervalSec: intervalSec,
+              activeSeasonMonthKey: targetKey,
+            },
+            $inc: { activeSeasonId: delta },
+          },
+          { returnDocument: 'after' },
+        );
+
+        if (advanced) return;
+      }
+      return;
+    }
+
+    const targetMonthKey = utcSeasonMonthKeyFromDate(now);
     const targetIdx = utcMonthIndexFromSeasonKey(targetMonthKey);
     if (targetIdx === null) return;
 
@@ -229,8 +354,8 @@ export class PointsService implements OnModuleInit {
     return {
       address: account.address,
       seasonId: account.seasonId,
-      swapPoints: decimalToString(account.swapPoints),
-      swapUsdVolume: decimalToString(account.swapUsdVolume),
+      swapPoints: decimalToStringFloor6(account.swapPoints),
+      swapUsdVolume: decimalToStringFloor6(account.swapUsdVolume),
       swapStreakDay: account.swapStreakDay,
       swapMultiplier: decimalToString(account.swapMultiplier),
       lastSwapDayIndex: account.lastSwapDayIndex ?? null,
@@ -253,8 +378,8 @@ export class PointsService implements OnModuleInit {
       sourceId: e.sourceId,
       poolProtocol: e.poolProtocol,
       chainId: e.chainId,
-      usdAmount: decimalToString(e.usdAmount),
-      points: decimalToString(e.points),
+      usdAmount: decimalToStringFloor6(e.usdAmount),
+      points: decimalToStringFloor6(e.points),
       multiplier: decimalToString(e.multiplier),
       pointsFormulaVersion: e.pointsFormulaVersion,
       createdAt: (
@@ -350,8 +475,8 @@ export class PointsService implements OnModuleInit {
           rank: ahead + 1,
           row: {
             address: mine.address,
-            swapPoints: decimalToString(mine.swapPoints),
-            swapUsdVolume: decimalToString(mine.swapUsdVolume),
+            swapPoints: decimalToStringFloor6(mine.swapPoints),
+            swapUsdVolume: decimalToStringFloor6(mine.swapUsdVolume),
           },
         };
       }
@@ -368,8 +493,8 @@ export class PointsService implements OnModuleInit {
       totalPages,
       entries: rows.map((r) => ({
         address: r.address,
-        swapPoints: decimalToString(r.swapPoints),
-        swapUsdVolume: decimalToString(r.swapUsdVolume),
+        swapPoints: decimalToStringFloor6(r.swapPoints),
+        swapUsdVolume: decimalToStringFloor6(r.swapUsdVolume),
       })),
       my,
     };
@@ -427,7 +552,9 @@ export class PointsService implements OnModuleInit {
       throw new Error('Invalid chainId');
     }
 
-    const usdAmountStr = toDecimal128String(input.usdAmount);
+    const usdAmountStr = floorTo6DecimalString(
+      toDecimal128String(input.usdAmount),
+    );
     const usdAmount = Types.Decimal128.fromString(usdAmountStr);
 
     const unixSeconds =
@@ -494,10 +621,9 @@ export class PointsService implements OnModuleInit {
       const streakDay = daily?.streakDay ?? 1;
       const multiplierStr = daily ? decimalToString(daily.multiplier) : '1';
 
-      const pointsStr = new BigNumber(usdAmountStr)
-        .times(new BigNumber(multiplierStr))
-        .decimalPlaces(18, BigNumber.ROUND_FLOOR)
-        .toFixed();
+      const pointsStr = floorTo6DecimalString(
+        new BigNumber(usdAmountStr).times(new BigNumber(multiplierStr)),
+      );
 
       const points = Types.Decimal128.fromString(pointsStr);
       const multiplier = Types.Decimal128.fromString(multiplierStr);
