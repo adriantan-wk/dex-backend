@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
+import { AuthWalletModule } from '../auth-wallet/auth-wallet.module';
 import { ReferralRebatesModule } from '../referrals-rebates/referral-rebates.module';
 import { AdminReferralsController } from './admin.controller';
+import { AdminSessionController } from './admin-session.controller';
+import { AdminGuard } from './admin.guard';
 
 /**
  * Admin module. Initially exposes the referral-rebate review endpoints with
@@ -11,7 +14,8 @@ import { AdminReferralsController } from './admin.controller';
  * later as a dedicated `admin-auth` submodule + `AdminGuard`.
  */
 @Module({
-  imports: [ReferralRebatesModule],
-  controllers: [AdminReferralsController],
+  imports: [ReferralRebatesModule, AuthWalletModule],
+  controllers: [AdminReferralsController, AdminSessionController],
+  providers: [AdminGuard],
 })
 export class AdminModule {}
