@@ -1,6 +1,7 @@
-import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ReferralRebatesCron } from '../referrals-rebates/referral-rebates.cron';
 import { ReferralRebatesService } from '../referrals-rebates/referral-rebates.service';
+import { AdminGuard } from './admin.guard';
 
 /**
  * Admin endpoints surfacing the referral rebate ledger.
@@ -10,6 +11,7 @@ import { ReferralRebatesService } from '../referrals-rebates/referral-rebates.se
  * any auth machinery is built.
  */
 @Controller('admin/referrals')
+@UseGuards(AdminGuard)
 export class AdminReferralsController {
   constructor(
     private readonly rebatesService: ReferralRebatesService,

@@ -121,11 +121,11 @@ export class AuthWalletService {
   validateSession(authHeader: string | undefined) {
     const prefix = 'Bearer ';
     if (!authHeader?.startsWith(prefix)) {
-      throw new UnauthorizedException('Missing bearer token');
+      throw new UnauthorizedException('Please sign your wallet to continue');
     }
     const token = authHeader.slice(prefix.length).trim();
     if (!token) {
-      throw new UnauthorizedException('Missing bearer token');
+      throw new UnauthorizedException('Please sign your wallet to continue');
     }
 
     try {
